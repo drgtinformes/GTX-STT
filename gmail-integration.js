@@ -4,8 +4,9 @@
  */
 
 const GMAIL_CONFIG = {
-    CLIENT_ID: '635192566350-l0vm8dr68m64boj6kko03jjp7t7reaue.apps.googleusercontent.com',
-    API_KEY: 'AIzaSyB9_0ywJNzTrPwE0EVhCjQfdq9oIiOp4co',
+    // Las claves ahora se cargan desde secrets.js (archivo no subido a GitHub)
+    CLIENT_ID: typeof GMAIL_SECRETS !== 'undefined' ? GMAIL_SECRETS.CLIENT_ID : '',
+    API_KEY: typeof GMAIL_SECRETS !== 'undefined' ? GMAIL_SECRETS.API_KEY : '',
     DISCOVERY_DOCS: ["https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest"],
     SCOPES: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send"
 };
