@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTX Radiologia - STT</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=1.2">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <div class="header-top">
+                <h1>GTX Radiologia - STT</h1>
+                <button id="history-btn" class="icon-btn" title="Historial de Informes"><i data-lucide="history"></i></button>
+                <button id="dict-btn" class="icon-btn" title="Diccionario Personalizado"><i data-lucide="book-open"></i></button>
+                <button id="macros-btn" class="icon-btn" title="Gestionar Macros"><i data-lucide="zap"></i></button>
+                <button id="vision-btn" class="icon-btn" title="Copiloto Visual (IA)"><i data-lucide="image"></i></button>
+                <button id="config-btn" class="icon-btn" title="Configurar IA"><i data-lucide="settings"></i></button>
+            </div>
+            <p>Habla con claridad para redactar tus informes</p>
+        </header>
+
+        <main class="glass-panel">
+            <div class="controls">
+                <button id="record-btn" class="btn primary-btn">
+                    <span class="icon"><i data-lucide="mic"></i></span>
+                    <span id="record-text">Iniciar Dictado (F2)</span>
+                </button>
+                <div class="engine-selector">
+                    <select id="engine-select" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--glass-border); color: var(--text-primary); font-size: 0.9rem; padding: 10px 12px; border-radius: 8px; outline: none; cursor: pointer; height: 100%;">
+                        <option value="native">🎙️ Motor: Navegador (Gratis)</option>
+                        <option value="whisper">✨ Motor: Whisper (OpenAI)</option>
+                        <option value="realtime-whisper">⚡ Motor: Whisper Realtime (OpenAI)</option>
+                    </select>
+                </div>
+                <div class="status-indicator">
+                    <div id="recording-pulse" class="pulse hidden"></div>
+                    <span id="status-text">Listo</span>
+                </div>
+                <button id="ai-process-btn" class="btn ai-btn">
+                    <span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (Gemini)
+                </button>
+            </div>
+
+            <div id="token-stats" class="token-stats hidden">
+                <div class="token-item">
+                    <span class="token-label">Último uso:</span>
+                    <span id="last-token-usage" class="token-value">0</span>
+                </div>
+                <div class="token-item">
+                    <span class="token-label">Total hoy:</span>
+                    <span id="daily-token-usage" class="token-value">0</span>
+                </div>
+                <div class="token-item">
+                    <span class="token-label">Restante est.:</span>
+                    <span id="remaining-quota" class="token-value">1,500</span>
+                </div>
+            </div>
+
+            <div class="textarea-container">
+                <textarea id="transcription" placeholder="El texto dictado aparecerá aquí. Puedes editarlo manualmente en cualquier momento..."></textarea>
+            </div>
+
+
+            <div class="actions">
+                <button id="copy-btn" class="btn secondary-btn"><i data-lucide="copy"></i> Copiar Texto</button>
+                <button id="download-btn" class="btn secondary-btn"><i data-lucide="download"></i> Descargar TXT</button>
+                <button id="clear-btn" class="btn danger-btn"><i data-lucide="trash-2"></i> Limpiar</button>
+            </div>
+
+            <hr style="border: 1px solid var(--glass-border); margin: 24px 0;">
+
+            <div class="word-generator-section">
+                <h3 style="margin-bottom: 12px; font-weight: 400;">Exportar Informe a Word</h3>
+                <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 15px;">
+                    Selecciona el centro radiológico para usar su plantilla correspondiente. El documento se completará automáticamente.
+                </p>
+                <div class="word-controls" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <select id="template-select" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--glass-border); color: var(--text-primary); font-size: 1rem; padding: 10px; border-radius: 8px; outline: none; cursor: pointer; font-family: inherit; min-width: 180px;">
+                        <!-- Se llenará dinámicamente -->
+                    </select>
+                    <button id="manage-templates-btn" class="icon-btn" title="Gestionar Plantillas" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);">
+                        <i data-lucide="settings-2"></i>
+                    </button>
+                    <button id="generate-word-btn" class="btn primary-btn" style="background: #10b981; box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.39);">
+                        <i data-lucide="file-text"></i> Word
+                    </button>
+                    <button id="send-gmail-btn" class="btn primary-btn" style="background: #ea4335; box-shadow: 0 4px 14px 0 rgba(234, 67, 53, 0.39);">
+                        <i data-lucide="mail"></i> Gmail
+                    </button>
+                    <button id="generate-pdf-btn" class="btn primary-btn" style="background: #ef4444; box-shadow: 0 4px 14px 0 rgba(239, 68, 68, 0.39); display: none;">
+                        <i data-lucide="file-type"></i> PDF
+                    </button>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Aplicación de reconocimiento de voz seguro (Procesamiento en dispositivo/navegador)</p>
+        </footer>
+
+        <!-- Modal de Configuración -->
+        <div id="config-modal" class="modal hidden">
+            <div class="modal-content glass-panel">
+                <div class="modal-header">
+                    <h2>Configuración de IA (Gratis)</h2>
+                    <button id="close-modal-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Ingresa tus claves de API para habilitar las funcionalidades inteligentes.</p>
+                    <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="api-key-input">Gemini API Key (Para formato e imágenes):</label>
+                        <input type="password" id="api-key-input" placeholder="AIzaSy...">
+                        <p class="small-text"><a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: #a855f7;">Consigue tu Gemini API Key Gratis aquí</a>.</p>
+                    </div>
+                    <div class="input-group">
+                        <label for="openai-key-input">OpenAI API Key (Para motor Whisper - Opcional):</label>
+                        <input type="password" id="openai-key-input" placeholder="sk-proj-...">
+                        <p class="small-text"><a href="https://platform.openai.com/api-keys" target="_blank" style="color: #10b981;">Consigue tu OpenAI API Key aquí</a>.</p>
+                    </div>
+                    <p class="small-text" style="margin-top: 15px;">Tus claves se guardan localmente en tu navegador de forma segura.</p>
+                </div>
+                <div class="modal-footer">
+                    <button id="save-key-btn" class="btn primary-btn">Guardar Clave</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Diccionario -->
+        <div id="dict-modal" class="modal hidden">
+            <div class="modal-content glass-panel" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>Diccionario Médico</h2>
+                    <button id="close-dict-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Enseña a la aplicación cómo corregir palabras que suele escuchar mal. Los cambios se guardan automáticamente en tu navegador.</p>
+                    
+                    <div class="dict-add-section" style="display: flex; gap: 10px; margin-bottom: 20px; align-items: flex-end;">
+                        <div class="input-group" style="flex: 1;">
+                            <label for="dict-wrong">Lo que escucha:</label>
+                            <input type="text" id="dict-wrong" placeholder="Ej. radio lúcido">
+                        </div>
+                        <div class="input-group" style="flex: 1;">
+                            <label for="dict-right">Lo que debe escribir:</label>
+                            <input type="text" id="dict-right" placeholder="Ej. radiolúcido">
+                        </div>
+                        <button id="add-dict-btn" class="btn primary-btn" style="padding: 12px; margin-bottom: 2px;"><i data-lucide="plus"></i></button>
+                    </div>
+
+                    <div class="dict-list-container" style="max-height: 250px; overflow-y: auto; background: rgba(15, 23, 42, 0.4); border-radius: 8px; padding: 10px; border: 1px solid var(--glass-border);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--glass-border);">
+                                    <th style="padding: 8px;">Escucha</th>
+                                    <th style="padding: 8px;">Escribe</th>
+                                    <th style="padding: 8px; width: 40px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="dict-list-body">
+                                <!-- Filas generadas por JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
+                        <button id="export-dict-btn" class="btn secondary-btn" style="font-size: 0.8rem;"><i data-lucide="download-cloud"></i> Exportar</button>
+                        <button id="import-dict-btn" class="btn secondary-btn" style="font-size: 0.8rem;"><i data-lucide="upload-cloud"></i> Importar</button>
+                        <input type="file" id="import-file" accept=".json" style="display: none;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Historial -->
+        <div id="history-modal" class="modal hidden">
+            <div class="modal-content glass-panel" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h2>Historial de Informes</h2>
+                    <button id="close-history-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Aquí se guardan localmente tus últimos 50 informes transcritos. Ningún dato sale de tu equipo.</p>
+                    <div id="history-list-container" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;">
+                        <!-- JS injects history items here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Gestión de Macros -->
+        <div id="macros-modal" class="modal hidden">
+            <div class="modal-content glass-panel" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h2>⚡ Macros / Frases Predefinidas</h2>
+                    <button id="close-macros-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Crea atajos de texto que puedes insertar con un clic o activar por voz diciendo el <strong>disparador</strong>.</p>
+
+                    <!-- Formulario de nuevo macro -->
+                    <div class="macro-add-form">
+                        <div class="macro-form-row">
+                            <div class="input-group">
+                                <label for="macro-name-input">Nombre del Macro</label>
+                                <input type="text" id="macro-name-input" placeholder="Ej. Cóndilos normal">
+                            </div>
+                            <div class="input-group">
+                                <label for="macro-trigger-input">Disparador de Voz</label>
+                                <input type="text" id="macro-trigger-input" placeholder="Ej. macro cóndilos">
+                            </div>
+                        </div>
+                        <div class="input-group" style="margin-top: 10px;">
+                            <label for="macro-text-input">Texto a Insertar</label>
+                            <textarea id="macro-text-input" placeholder="Ej. Cóndilos y ramas mandibulares de anatomía conservada." style="height: 80px; font-size: 0.9rem; padding: 10px;"></textarea>
+                        </div>
+                        <button id="add-macro-btn" class="btn primary-btn" style="margin-top: 10px; background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 4px 14px rgba(245,158,11,0.3);">
+                            <i data-lucide="plus"></i> Agregar Macro
+                        </button>
+                    </div>
+
+                    <!-- Lista de macros -->
+                    <div class="macro-list-container" id="macro-list-container" style="margin-top: 20px; max-height: 280px; overflow-y: auto;">
+                        <!-- Generado por JS -->
+                    </div>
+
+                    <!-- Acciones importar/exportar -->
+                    <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
+                        <button id="export-macros-btn" class="btn secondary-btn" style="font-size: 0.8rem;"><i data-lucide="download-cloud"></i> Exportar</button>
+                        <button id="import-macros-btn" class="btn secondary-btn" style="font-size: 0.8rem;"><i data-lucide="upload-cloud"></i> Importar</button>
+                        <input type="file" id="import-macros-file" accept=".json" style="display: none;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Gestión de Plantillas -->
+        <div id="template-modal" class="modal hidden">
+            <div class="modal-content glass-panel" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>Gestión de Plantillas Word</h2>
+                    <button id="close-template-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Sube tus propios archivos .docx con etiquetas como {PACIENTE}, {DIAGNOSTICO}, etc. para automatizar tus informes.</p>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <button id="upload-template-btn" class="btn primary-btn" style="width: 100%; justify-content: center; gap: 8px;">
+                            <i data-lucide="upload"></i> Subir Nueva Plantilla (.docx)
+                        </button>
+                        <input type="file" id="template-file-input" accept=".docx" style="display: none;">
+                    </div>
+
+                    <div class="template-list-container" style="max-height: 250px; overflow-y: auto; background: rgba(15, 23, 42, 0.4); border-radius: 8px; padding: 10px; border: 1px solid var(--glass-border);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--glass-border);">
+                                    <th style="padding: 8px;">Nombre</th>
+                                    <th style="padding: 8px; width: 140px;">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="template-list-body">
+                                <!-- Filas generadas por JS -->
+                            </tbody>
+                        </table>
+                        <input type="file" id="replace-template-input" accept=".docx" style="display: none;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Copiloto Visual -->
+        <div id="vision-modal" class="modal hidden">
+            <div class="modal-content glass-panel" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h2>Copiloto Visual de Lesiones</h2>
+                    <button id="close-vision-btn" class="icon-btn"><i data-lucide="x"></i></button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">Pega (Ctrl+V) un recorte de tu radiografía para que Gemini analice y describa los hallazgos.</p>
+                    
+                    <div id="vision-paste-area" class="paste-area" tabindex="0">
+                        <div class="paste-placeholder">
+                            <i data-lucide="clipboard-paste" style="width: 48px; height: 48px; color: var(--text-secondary); margin-bottom: 10px;"></i>
+                            <p>Haz clic aquí y presiona <strong>Ctrl+V</strong> para pegar una imagen</p>
+                        </div>
+                        <img id="vision-preview-img" class="hidden" src="" alt="Vista previa de recorte">
+                    </div>
+
+                    <div class="input-group" style="margin-top: 15px;">
+                        <label for="vision-prompt-input">¿Qué debo analizar en esta imagen?</label>
+                        <input type="text" id="vision-prompt-input" placeholder="Ej. Describe las características radiográficas de la lesión apical en el 4.6">
+                    </div>
+
+                    <button id="vision-analyze-btn" class="btn primary-btn" style="width: 100%; margin-top: 15px; justify-content: center; background: linear-gradient(135deg, #8b5cf6, #6366f1); box-shadow: 0 4px 14px rgba(139, 92, 246, 0.3);">
+                        <i data-lucide="sparkles"></i> Analizar con IA
+                    </button>
+
+                    <div id="vision-result-container" class="hidden" style="margin-top: 20px; background: rgba(15, 23, 42, 0.6); padding: 15px; border-radius: 8px; border: 1px solid var(--glass-border);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <h3 style="font-size: 1rem; color: #a855f7;">Análisis:</h3>
+                            <button id="vision-copy-btn" class="btn secondary-btn" style="padding: 5px 10px; font-size: 0.8rem;"><i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copiar Texto</button>
+                        </div>
+                        <div id="vision-result-text" style="font-size: 0.95rem; white-space: pre-wrap; line-height: 1.5; color: var(--text-primary); max-height: 200px; overflow-y: auto;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    
+    <!-- Librerías para Generación de Word (.docx) -->
+    <script src="https://unpkg.com/pizzip@3.1.7/dist/pizzip.js"></script>
+    <script src="https://unpkg.com/docxtemplater@3.49.0/build/docxtemplater.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.4.21/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    
+    <script src="templates.js"></script>
+    <script src="prompt.js"></script>
+    <script src="gmail-integration.js?v=1.2"></script>
+    <script src="main.js?v=2"></script>
+    
+    <!-- Google API Libraries -->
+    <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+    <script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+.gemini/
+respaldo_antes_de_whisper.zip
+node_modules/
+.DS_Store
+Thumbs.db
