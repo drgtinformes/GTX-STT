@@ -393,6 +393,7 @@ const historyListContainer = document.getElementById('history-list-container');
 
 let isRecording = false;
 let finalTranscript = '';
+let lastDictatedText = ''; // Track engine text before manual edits
 
 // Función para reemplazar términos según el diccionario
 function applyCorrections(text) {
@@ -495,6 +496,7 @@ recognition.onresult = (event) => {
         
         finalTranscript += corrected + ' ';
         transcriptionArea.value = finalTranscript;
+        lastDictatedText = finalTranscript;
         localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
     }
     
@@ -587,6 +589,7 @@ async function startWhisperRecording() {
                     
                     finalTranscript += corrected + ' ';
                     transcriptionArea.value = finalTranscript;
+                    lastDictatedText = finalTranscript;
                     localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
                     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
                 }
@@ -759,6 +762,7 @@ async function startRealtimeWhisperRecording() {
                     finalTranscript += corrected + ' ';
                     currentRealtimeDraft = "";
                     transcriptionArea.value = finalTranscript;
+                    lastDictatedText = finalTranscript;
                     localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
                     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
                 }
@@ -1557,6 +1561,14 @@ if (generateWordBtn) {
         if (docData) {
             window.saveAs(docData.blob, docData.fileNameBase + ".docx");
         }
+        
+        // Aprender correcciones en segundo plano al generar el Word
+        const textToProcess = transcriptionArea.value.trim();
+        const apiKey = localStorage.getItem('gemini_api_key');
+        if (apiKey && lastDictatedText.trim() && textToProcess !== lastDictatedText.trim()) {
+            learnCorrections(lastDictatedText.trim(), textToProcess, apiKey);
+        }
+        lastDictatedText = textToProcess;
     });
 }
 
@@ -2423,4 +2435,55 @@ if (visionCopyBtn) {
             alert('Error al copiar al portapapeles');
         });
     });
+}
+
+// === Aprendizaje Automático de Correcciones ===
+async function learnCorrections(original, edited, apiKey) {
+    try {
+        const prompt = `Compara el texto original con el texto editado por el usuario. 
+El usuario ha corregido errores de dictado o términos médicos/radiológicos.
+Extrae UNICAMENTE las palabras o frases cortas que fueron corregidas.
+Ignora cambios de formato, mayúsculas a principio de oración, o puntuación.
+Devuelve EXCLUSIVAMENTE un objeto JSON donde las claves son las palabras mal escritas (en el original) y los valores son las correcciones (en el editado).
+Si no hay correcciones relevantes de palabras, devuelve {}.
+
+Original: "${original}"
+Editado: "${edited}"`;
+
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+        };
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            const resultText = data.candidates[0].content.parts[0].text;
+            const newCorrections = JSON.parse(resultText);
+            
+            let addedCount = 0;
+            for (const [wrong, right] of Object.entries(newCorrections)) {
+                const w = wrong.toLowerCase().trim();
+                const r = right.trim();
+                // Avoid empty, identical or already existing ones
+                if (w && r && w !== r.toLowerCase() && !correctionsDict[w]) {
+                    correctionsDict[w] = r;
+                    addedCount++;
+                }
+            }
+
+            if (addedCount > 0) {
+                localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+                if (typeof renderDict === 'function') renderDict();
+                console.log(`Aprendidas ${addedCount} nuevas correcciones.`);
+            }
+        }
+    } catch (e) {
+        console.error("Error aprendiendo correcciones:", e);
+    }
 }
