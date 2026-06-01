@@ -116,6 +116,13 @@ const defaultCorrectionsDict = {
     "con bim": "cone beam",
     "tomografía": "tomografía",
     "resonancia magnética": "resonancia magnética",
+    "set total": "Set Total",
+    "se total": "Set Total",
+    "ser total": "Set Total",
+    "cet total": "Set Total",
+    "ce total": "Set Total",
+    "setotal": "Set Total",
+    "se-total": "Set Total",
     
     // === ANATOMÍA TEMPORO-MANDIBULAR ===
     "articulación temporo-mandibular": "articulación temporo-mandibular",
@@ -156,13 +163,26 @@ if (savedDict) {
     }
 }
 
+let correctionsMeta = {};
+const savedMeta = localStorage.getItem('custom_dict_meta');
+if (savedMeta) {
+    try {
+        correctionsMeta = JSON.parse(savedMeta);
+    } catch (e) {
+        console.error("Error al leer la metadata del diccionario", e);
+    }
+}
+
+
 // === GESTOR DE PLANTILLAS ===
 class TemplateManager {
     constructor() {
         this.defaults = {
             'QVA': { name: 'Centro Radiológico QVA', base64: templatesBase64.QVA, isDefault: true },
             'TALCA': { name: 'Centro Radiológico TALCA', base64: templatesBase64.TALCA, isDefault: true },
-            'PLANTILLA_MP': { name: 'PLANTILLA MP', base64: templatesBase64.PLANTILLA_MP, isDefault: true }
+            'PLANTILLA_MP': { name: 'PLANTILLA MP', base64: templatesBase64.PLANTILLA_MP, isDefault: true },
+            'CENTALIS': { name: 'Centro Radiológico CENTALIS', base64: templatesBase64.CENTALIS, isDefault: true },
+            'HMS': { name: 'Centro Radiológico HMS', base64: templatesBase64.HMS, isDefault: true }
         };
         this.templates = this.loadTemplates();
     }
@@ -270,67 +290,100 @@ class TemplateManager {
 
 const templateManager = new TemplateManager();
 
-// === GESTOR DE CUOTA DE TOKENS ===
-class TokenQuotaManager {
+// === GESTOR DE COSTOS REALTIME WHISPER ===
+class RealtimeCostManager {
     constructor() {
-        this.dailyLimit = 1500; // Solicitudes por día (Gemini 1.5 Flash Free Tier)
+        this.ratePerMinute = 0.017;
         this.loadStats();
     }
 
     loadStats() {
         const today = new Date().toDateString();
-        const saved = JSON.parse(localStorage.getItem('token_usage_stats')) || {};
+        let saved = {};
+        try {
+            const stored = localStorage.getItem('realtime_cost_stats');
+            if (stored) {
+                saved = JSON.parse(stored) || {};
+            }
+        } catch (e) {
+            console.error("Error parsing realtime_cost_stats:", e);
+        }
         
-        if (saved.date !== today) {
+        if (!saved || typeof saved !== 'object' || saved.date !== today) {
             this.stats = {
                 date: today,
-                dailyRequests: 0,
-                dailyTokens: 0,
-                lastUsage: 0
+                dailyCost: 0,
+                lastSessionCost: 0
             };
             this.saveStats();
         } else {
-            this.stats = saved;
+            this.stats = {
+                date: today,
+                dailyCost: Number(saved.dailyCost) || 0,
+                lastSessionCost: Number(saved.lastSessionCost) || 0
+            };
         }
-        this.updateUI();
+        this.updateUI(0, false);
     }
 
     saveStats() {
-        localStorage.setItem('token_usage_stats', JSON.stringify(this.stats));
+        localStorage.setItem('realtime_cost_stats', JSON.stringify(this.stats));
     }
 
-    recordUsage(usageMetadata) {
-        if (!usageMetadata) return;
-        
-        const total = usageMetadata.totalTokenCount || 0;
-        this.stats.dailyRequests += 1;
-        this.stats.dailyTokens += total;
-        this.stats.lastUsage = total;
-        
+    recordSession(durationSeconds) {
+        const cost = (durationSeconds / 60) * this.ratePerMinute;
+        this.stats.lastSessionCost = cost;
+        this.stats.dailyCost += cost;
         this.saveStats();
-        this.updateUI();
+        this.updateUI(0, false);
     }
 
-    updateUI() {
-        const statsEl = document.getElementById('token-stats');
-        const lastEl = document.getElementById('last-token-usage');
-        const dailyEl = document.getElementById('daily-token-usage');
-        const remainingEl = document.getElementById('remaining-quota');
+    updateUI(currentElapsedSeconds = 0, isRecording = false) {
+        const container = document.getElementById('realtime-cost-container');
+        const lastSessionEl = document.getElementById('last-session-cost');
+        const elapsedTimeEl = document.getElementById('realtime-elapsed-time');
+        const dailyCostEl = document.getElementById('daily-cost');
+        const engineSelect = document.getElementById('engine-select');
 
-        if (this.stats.dailyRequests > 0) {
-            statsEl.classList.remove('hidden');
+        if (!container) return;
+
+        // Solo mostrar si el motor seleccionado es Realtime Whisper
+        if (engineSelect && engineSelect.value === 'realtime-whisper') {
+            container.classList.remove('hidden');
+        } else {
+            container.classList.add('hidden');
         }
 
-        if (lastEl) lastEl.innerText = this.stats.lastUsage.toLocaleString();
-        if (dailyEl) dailyEl.innerText = this.stats.dailyTokens.toLocaleString();
-        if (remainingEl) {
-            const remaining = Math.max(0, this.dailyLimit - this.stats.dailyRequests);
-            remainingEl.innerText = remaining.toLocaleString() + ' req';
+        const lastSessionVal = Number(this.stats ? this.stats.lastSessionCost : 0) || 0;
+        const dailyCostVal = Number(this.stats ? this.stats.dailyCost : 0) || 0;
+
+        if (lastSessionEl) {
+            if (isRecording) {
+                const currentCost = (currentElapsedSeconds / 60) * this.ratePerMinute;
+                lastSessionEl.innerText = `$${currentCost.toFixed(4)}`;
+            } else {
+                lastSessionEl.innerText = `$${lastSessionVal.toFixed(4)}`;
+            }
+        }
+
+        if (elapsedTimeEl) {
+            const minutes = Math.floor(currentElapsedSeconds / 60).toString().padStart(2, '0');
+            const seconds = Math.floor(currentElapsedSeconds % 60).toString().padStart(2, '0');
+            elapsedTimeEl.innerText = `${minutes}:${seconds}`;
+        }
+
+        if (dailyCostEl) {
+            if (isRecording) {
+                const currentCost = (currentElapsedSeconds / 60) * this.ratePerMinute;
+                dailyCostEl.innerText = `$${(dailyCostVal + currentCost).toFixed(4)}`;
+            } else {
+                dailyCostEl.innerText = `$${dailyCostVal.toFixed(4)}`;
+            }
         }
     }
 }
 
-const quotaManager = new TokenQuotaManager();
+const realtimeCostManager = new RealtimeCostManager();
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -353,7 +406,29 @@ window.addEventListener('DOMContentLoaded', () => {
         if (transcriptionArea) {
             transcriptionArea.value = savedText;
             finalTranscript = savedText;
+            lastSystemText = savedText;
         }
+    }
+
+    // Restaurar y gestionar selección de motor
+    const engineSelect = document.getElementById('engine-select');
+    if (engineSelect) {
+        const savedEngine = localStorage.getItem('selected_engine');
+        if (savedEngine) {
+            engineSelect.value = savedEngine;
+        }
+        
+        // Inicializar UI del costo
+        if (typeof realtimeCostManager !== 'undefined') {
+            realtimeCostManager.updateUI(0, false);
+        }
+        
+        engineSelect.addEventListener('change', () => {
+            localStorage.setItem('selected_engine', engineSelect.value);
+            if (typeof realtimeCostManager !== 'undefined') {
+                realtimeCostManager.updateUI(0, false);
+            }
+        });
     }
 });
 
@@ -363,6 +438,11 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'F2') {
         e.preventDefault(); 
         toggleRecording();
+    }
+    // F3 para Pausar/Reanudar (Realtime Whisper)
+    if (e.key === 'F3') {
+        e.preventDefault();
+        if (typeof togglePauseRealtime === 'function') togglePauseRealtime();
     }
 });
 
@@ -375,6 +455,7 @@ const transcriptionArea = document.getElementById('transcription');
 const copyBtn = document.getElementById('copy-btn');
 const downloadBtn = document.getElementById('download-btn');
 const clearBtn = document.getElementById('clear-btn');
+const pauseBtn = document.getElementById('pause-btn');
 
 // Elementos de la IA y Modal
 const configBtn = document.getElementById('config-btn');
@@ -392,8 +473,12 @@ const historyListContainer = document.getElementById('history-list-container');
 
 
 let isRecording = false;
+let isRealtimePaused = false;
 let finalTranscript = '';
 let lastDictatedText = ''; // Track engine text before manual edits
+let lastSystemText = ''; // Rastrear el último texto puesto por el sistema (antes de las correcciones del usuario)
+let learnDebounceTimer = null; // Temporizador para el guardado asíncrono
+
 
 // Función para reemplazar términos según el diccionario
 function applyCorrections(text) {
@@ -497,6 +582,7 @@ recognition.onresult = (event) => {
         finalTranscript += corrected + ' ';
         transcriptionArea.value = finalTranscript;
         lastDictatedText = finalTranscript;
+        lastSystemText = finalTranscript;
         localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
     }
     
@@ -514,6 +600,8 @@ let audioContext = null;
 let audioProcessor = null;
 let realtimeStream = null;
 let currentRealtimeDraft = "";
+let realtimeStartTime = null;
+let realtimeCostInterval = null;
 const engineSelect = document.getElementById('engine-select');
 
 async function startWhisperRecording() {
@@ -536,6 +624,23 @@ async function startWhisperRecording() {
             recordingPulse.classList.remove('hidden');
         };
 
+// Función para armar el prompt dinámico de Whisper basándose en correcciones previas
+function buildWhisperPrompt() {
+    const basePrompt = 'Informes radiológicos dentales. Diente 1.6: Restaurado. Caries distal. Periápices normales.';
+    if (!correctionsDict) return basePrompt;
+    
+    // Obtener los términos correctos del diccionario (máximo 15 términos únicos para no exceder límites)
+    const customTerms = Object.values(correctionsDict)
+        .filter(term => typeof term === 'string' && term.length > 2 && !term.includes(' '))
+        .slice(-15)
+        .join(', ');
+        
+    if (customTerms) {
+        return `${basePrompt} Términos y nombres específicos a transcribir correctamente: ${customTerms}.`;
+    }
+    return basePrompt;
+}
+
         mediaRecorder.onstop = async () => {
             isRecording = false;
             recordBtn.classList.remove('recording');
@@ -557,7 +662,7 @@ async function startWhisperRecording() {
             formData.append('file', audioBlob, 'audio.webm');
             formData.append('model', 'whisper-1');
             formData.append('language', 'es'); // Recomendado para mayor velocidad/precisión
-            formData.append('prompt', 'Informes radiológicos dentales. Diente 1.6: Restaurado. Caries distal. Periápices normales.'); // Guía de estilo para puntuación
+            formData.append('prompt', buildWhisperPrompt()); // Guía de estilo dinámica para puntuación e IA acústica
 
             try {
                 const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -590,6 +695,7 @@ async function startWhisperRecording() {
                     finalTranscript += corrected + ' ';
                     transcriptionArea.value = finalTranscript;
                     lastDictatedText = finalTranscript;
+                    lastSystemText = finalTranscript;
                     localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
                     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
                 }
@@ -622,11 +728,22 @@ function toggleRecording() {
             isRecording = false;
             recognition.stop();
         }
+        if (pauseBtn) pauseBtn.classList.add('hidden');
+        isRealtimePaused = false;
+        if (pauseBtn) {
+            pauseBtn.innerHTML = '<span class="icon"><i data-lucide="pause"></i></span>';
+            pauseBtn.style.backgroundColor = '';
+            pauseBtn.style.borderColor = '';
+        }
     } else {
         if (isWhisper) {
             startWhisperRecording();
         } else if (isRealtimeWhisper) {
             startRealtimeWhisperRecording();
+            if (pauseBtn) {
+                pauseBtn.classList.remove('hidden');
+                lucide.createIcons();
+            }
         } else {
             try {
                 recognition.start();
@@ -681,6 +798,17 @@ async function startRealtimeWhisperRecording() {
             recordingPulse.classList.remove('hidden');
             currentRealtimeDraft = "";
 
+            // --- INICIAR TIMER Y COSTO REALTIME ---
+            realtimeStartTime = Date.now();
+            if (typeof realtimeCostManager !== 'undefined') {
+                realtimeCostManager.updateUI(0, true);
+                if (realtimeCostInterval) clearInterval(realtimeCostInterval);
+                realtimeCostInterval = setInterval(() => {
+                    const elapsed = (Date.now() - realtimeStartTime) / 1000;
+                    realtimeCostManager.updateUI(elapsed, true);
+                }, 500);
+            }
+
             realtimeWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
@@ -714,6 +842,7 @@ async function startRealtimeWhisperRecording() {
 
             audioProcessor.onaudioprocess = (e) => {
                 if (!isRecording || realtimeWs.readyState !== WebSocket.OPEN) return;
+                if (isRealtimePaused) return;
                 const inputData = e.inputBuffer.getChannelData(0);
                 
                 // VAD Local (Detector de Silencios)
@@ -763,6 +892,7 @@ async function startRealtimeWhisperRecording() {
                     currentRealtimeDraft = "";
                     transcriptionArea.value = finalTranscript;
                     lastDictatedText = finalTranscript;
+                    lastSystemText = finalTranscript;
                     localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
                     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
                 }
@@ -800,6 +930,17 @@ function stopRealtimeWhisperRecording(immediate = false) {
     statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando transcripción...';
     recordingPulse.classList.add('hidden');
 
+    // --- DETENER TIMER Y GUARDAR COSTO REALTIME ---
+    if (realtimeCostInterval) {
+        clearInterval(realtimeCostInterval);
+        realtimeCostInterval = null;
+    }
+    if (realtimeStartTime && typeof realtimeCostManager !== 'undefined') {
+        const elapsed = (Date.now() - realtimeStartTime) / 1000;
+        realtimeCostManager.recordSession(elapsed);
+        realtimeStartTime = null;
+    }
+
     if (audioProcessor) {
         audioProcessor.disconnect();
         audioProcessor = null;
@@ -827,7 +968,33 @@ function stopRealtimeWhisperRecording(immediate = false) {
 
 recordBtn.addEventListener('click', toggleRecording);
 
+if (pauseBtn) {
+    pauseBtn.addEventListener('click', togglePauseRealtime);
+}
+
+function togglePauseRealtime() {
+    if (!isRecording || engineSelect.value !== 'realtime-whisper') return;
+    
+    isRealtimePaused = !isRealtimePaused;
+    
+    if (isRealtimePaused) {
+        pauseBtn.innerHTML = '<span class="icon"><i data-lucide="play"></i></span>';
+        pauseBtn.style.backgroundColor = 'rgba(245, 158, 11, 0.2)';
+        pauseBtn.style.borderColor = '#f59e0b';
+        statusText.innerText = 'Pausado (No consume tokens)...';
+        recordingPulse.classList.add('hidden');
+    } else {
+        pauseBtn.innerHTML = '<span class="icon"><i data-lucide="pause"></i></span>';
+        pauseBtn.style.backgroundColor = '';
+        pauseBtn.style.borderColor = '';
+        statusText.innerText = 'Grabando (Tiempo Real)...';
+        recordingPulse.classList.remove('hidden');
+    }
+    lucide.createIcons();
+}
+
 copyBtn.addEventListener('click', () => {
+    triggerCorrectionCheck(); // Comprobar aprendizaje de forma consolidada antes de copiar
     transcriptionArea.select();
     document.execCommand('copy');
     
@@ -863,28 +1030,49 @@ downloadBtn.addEventListener('click', () => {
     URL.revokeObjectURL(url);
 });
 
-// Guardar texto al escribir manualmente
+// Guardar texto al escribir manualmente y disparar aprendizaje con debounce
 transcriptionArea.addEventListener('input', () => {
     finalTranscript = transcriptionArea.value;
     localStorage.setItem(AUTOSAVE_KEY, transcriptionArea.value);
+
+    if (learnDebounceTimer) {
+        clearTimeout(learnDebounceTimer);
+    }
+    
+    learnDebounceTimer = setTimeout(() => {
+        triggerCorrectionCheck();
+    }, 4000);
+});
+
+// Comprobar aprendizaje de forma inmediata al perder el foco
+transcriptionArea.addEventListener('blur', () => {
+    triggerCorrectionCheck();
 });
 
 clearBtn.addEventListener('click', () => {
     if (confirm("¿Estás seguro de que deseas borrar todo el texto? Esta acción no se puede deshacer.")) {
         transcriptionArea.value = '';
         finalTranscript = '';
+        lastSystemText = '';
         localStorage.removeItem(AUTOSAVE_KEY);
     }
 });
 
 // === Lógica de Configuración y Modal ===
 const openaiKeyInput = document.getElementById('openai-key-input');
+const anthropicKeyInput = document.getElementById('anthropic-key-input');
+const formatterModelSelect = document.getElementById('formatter-model-select');
 
 // Cargar API Keys si existen
 const savedApiKey = localStorage.getItem('gemini_api_key');
 const savedOpenAIKey = localStorage.getItem('openai_api_key');
+const savedAnthropicKey = localStorage.getItem('anthropic_api_key');
+const savedFormatterModel = localStorage.getItem('formatter_model') || 'auto';
+
 if (savedApiKey && apiKeyInput) apiKeyInput.value = savedApiKey;
 if (savedOpenAIKey && openaiKeyInput) openaiKeyInput.value = savedOpenAIKey;
+if (savedAnthropicKey && anthropicKeyInput) anthropicKeyInput.value = savedAnthropicKey;
+if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 configBtn.addEventListener('click', () => {
     configModal.classList.remove('hidden');
@@ -897,11 +1085,15 @@ closeModalBtn.addEventListener('click', () => {
 saveKeyBtn.addEventListener('click', () => {
     const geminiKey = apiKeyInput.value.trim();
     const openaiKey = openaiKeyInput ? openaiKeyInput.value.trim() : '';
+    const anthropicKey = anthropicKeyInput ? anthropicKeyInput.value.trim() : '';
+    const formatterModel = formatterModelSelect ? formatterModelSelect.value : 'auto';
     
-    if (geminiKey) localStorage.setItem('gemini_api_key', geminiKey);
-    if (openaiKey) localStorage.setItem('openai_api_key', openaiKey);
+    localStorage.setItem('gemini_api_key', geminiKey);
+    localStorage.setItem('openai_api_key', openaiKey);
+    localStorage.setItem('anthropic_api_key', anthropicKey);
+    localStorage.setItem('formatter_model', formatterModel);
     
-    alert('Claves de API guardadas exitosamente.');
+    alert('Configuración guardada exitosamente.');
     configModal.classList.add('hidden');
 });
 
@@ -933,8 +1125,14 @@ function renderDict() {
         const tr = document.createElement('tr');
         tr.style.borderBottom = '1px solid var(--glass-border)';
         
+        // Comprobar si es un término aprendido automáticamente
+        const meta = correctionsMeta[wrong];
+        const badge = (meta && meta.auto) 
+            ? `<span class="auto-badge" style="font-size: 0.7rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; padding: 2px 6px; border-radius: 10px; margin-left: 6px; border: 1px solid rgba(168, 85, 247, 0.3);" title="Aprendido automáticamente de tus correcciones">Auto</span>` 
+            : '';
+            
         tr.innerHTML = `
-            <td style="padding: 8px;">${wrong}</td>
+            <td style="padding: 8px; display: flex; align-items: center; gap: 4px;">${wrong}${badge}</td>
             <td style="padding: 8px;">${right}</td>
             <td style="padding: 8px; text-align: center;">
                 <button class="icon-btn delete-word-btn" data-word="${wrong}" style="font-size: 1rem; color: #ef4444;" title="Eliminar"><i data-lucide="trash-2"></i></button>
@@ -950,7 +1148,9 @@ function renderDict() {
         btn.addEventListener('click', (e) => {
             const wordToRemove = e.currentTarget.getAttribute('data-word');
             delete correctionsDict[wordToRemove];
+            delete correctionsMeta[wordToRemove];
             localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+            localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
             renderDict();
         });
     });
@@ -975,7 +1175,9 @@ addDictBtn.addEventListener('click', () => {
     }
 
     correctionsDict[wrong] = right;
+    delete correctionsMeta[wrong]; // Quitar marca automática si el usuario lo define a mano
     localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+    localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
     
     dictWrongInput.value = '';
     dictRightInput.value = '';
@@ -1085,6 +1287,7 @@ function renderHistory() {
         restoreBtn.onclick = () => {
             transcriptionArea.value = item.text;
             finalTranscript = item.text;
+            lastSystemText = item.text;
             historyModal.classList.add('hidden');
         };
         
@@ -1123,14 +1326,99 @@ closeHistoryBtn.addEventListener('click', () => {
 
 // === Lógica de Procesamiento con IA (Google Gemini) ===
 aiProcessBtn.addEventListener('click', async () => {
+    await triggerCorrectionCheck(); // Aprender correcciones acumuladas de forma consolidada antes del envío a Gemini
     const textToProcess = transcriptionArea.value.trim();
-    const apiKey = localStorage.getItem('gemini_api_key');
+    const formatterModel = localStorage.getItem('formatter_model') || 'auto';
 
     if (!textToProcess) {
         alert('No hay texto para procesar. Por favor dicta algo primero.');
         return;
     }
 
+    if (formatterModel === 'claude-4.7-opus') {
+        const anthropicKey = localStorage.getItem('anthropic_api_key');
+        if (!anthropicKey) {
+            alert('Debes configurar tu API Key de Anthropic primero haciendo clic en el icono de configuración (engranaje).');
+            configModal.classList.remove('hidden');
+            return;
+        }
+
+        const originalBtnText = aiProcessBtn.innerHTML;
+        aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Procesando...';
+        aiProcessBtn.disabled = true;
+
+        try {
+            function buildDynamicSystemPrompt() {
+                let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+                
+                if (Object.keys(correctionsDict).length > 0) {
+                    let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+                    customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+                    for (const [wrong, right] of Object.entries(correctionsDict)) {
+                        if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                            customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+                        }
+                    }
+                    basePrompt += customRules;
+                }
+                return basePrompt;
+            }
+
+            const payload = {
+                model: "claude-opus-4-7",
+                max_tokens: 4096,
+                system: buildDynamicSystemPrompt(),
+                messages: [
+                    {
+                        role: "user",
+                        content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}`
+                    }
+                ]
+            };
+
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': anthropicKey,
+                    'anthropic-version': '2023-06-01',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const errDetail = errData.error?.message || `HTTP ${response.status}`;
+                throw new Error(errDetail);
+            }
+
+            const responseData = await response.json();
+            if (responseData.content && responseData.content.length > 0 && responseData.content[0].text) {
+                let resultText = responseData.content[0].text;
+                resultText = adjustHeadersForSetTotal(resultText);
+                transcriptionArea.value = resultText;
+                finalTranscript = resultText;
+                lastSystemText = resultText;
+                saveToHistory(resultText);
+            } else {
+                throw new Error("No se pudo obtener respuesta de Claude.");
+            }
+        } catch (error) {
+            console.error("Error al procesar con Claude:", error);
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('CORS')) {
+                alert(`Error de red al conectar con Anthropic. Esto suele deberse a restricciones de CORS del navegador para llamadas directas a APIs externas.\n\nSolución: Instala y activa una extensión de CORS bypass (ej: 'Allow CORS: Access-Control-Allow-Origin') en tu navegador o configura un proxy local.`);
+            } else {
+                alert(`Ocurrió un error con Claude: ${error.message}`);
+            }
+        } finally {
+            aiProcessBtn.innerHTML = originalBtnText;
+            aiProcessBtn.disabled = false;
+        }
+        return;
+    }
+
+    const apiKey = localStorage.getItem('gemini_api_key');
     if (!apiKey) {
         alert('Debes configurar tu API Key de Gemini primero haciendo clic en el icono de configuración (engranaje).');
         configModal.classList.remove('hidden');
@@ -1143,48 +1431,75 @@ aiProcessBtn.addEventListener('click', async () => {
 
     try {
         // 1. Obtener la lista de modelos disponibles para esta API Key
-        const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-        if (!listRes.ok) throw new Error("API Key inválida o no se pudo contactar al servidor de Google.");
-        
-        const listData = await listRes.json();
-        
-        // 2. Filtrar y Priorizar Modelos
-        // Solo modelos que soportan generación de contenido
-        let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
-        
-        // Excluir modelos restringidos o no aptos para este uso (como computer-use-preview que da cuota 0)
-        availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
-
-        // Priorizar modelos 1.5 (especialmente Flash por su mayor cuota gratuita)
-        const priorityOrder = [
-            'gemini-1.5-flash-latest',
-            'gemini-1.5-flash',
-            'gemini-1.5-flash-8b',
-            'gemini-1.5-pro-latest',
-            'gemini-1.5-pro'
-        ];
-
         let validModels = [];
-        
-        // Primero agregamos los de prioridad en orden
-        priorityOrder.forEach(pName => {
-            const found = availableModels.find(m => m.name.endsWith(pName));
-            if (found) validModels.push(found);
-        });
+        try {
+            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            if (listRes.ok) {
+                const listData = await listRes.json();
+                let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
+                availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
 
-        // Luego agregamos el resto que sean modernos (1.5 o superior) pero no estén en la prioridad
-        availableModels.forEach(m => {
-            const isModern = m.name.includes('1.5') || m.name.includes('2.0') || m.name.includes('2.5');
-            if (isModern && !validModels.find(vm => vm.name === m.name)) {
-                validModels.push(m);
+                const priorityOrder = [];
+                if (formatterModel !== 'auto' && formatterModel.startsWith('gemini-')) {
+                    priorityOrder.push(formatterModel);
+                }
+                const defaultPriority = [
+                    'gemini-2.0-flash',
+                    'gemini-1.5-flash-latest',
+                    'gemini-1.5-flash',
+                    'gemini-1.5-flash-8b',
+                    'gemini-1.5-pro-latest',
+                    'gemini-1.5-pro'
+                ];
+                defaultPriority.forEach(pName => {
+                    if (!priorityOrder.includes(pName)) {
+                        priorityOrder.push(pName);
+                    }
+                });
+
+                priorityOrder.forEach(pName => {
+                    const found = availableModels.find(m => m.name.endsWith(pName));
+                    if (found) validModels.push(found);
+                });
+
+                availableModels.forEach(m => {
+                    const isModern = m.name.includes('1.5') || m.name.includes('2.0') || m.name.includes('2.5');
+                    if (isModern && !validModels.find(vm => vm.name === m.name)) {
+                        validModels.push(m);
+                    }
+                });
             }
-        });
+        } catch (listErr) {
+            console.warn("No se pudo obtener la lista de modelos de Gemini dinámicamente en formateador. Usando defaults.", listErr);
+        }
 
-        if (validModels.length === 0) throw new Error("Tu cuenta no tiene modelos estables (1.5+) habilitados o disponibles.");
+        if (validModels.length === 0) {
+            const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+            fallbackModels.forEach(mName => {
+                validModels.push({ name: `models/${mName}` });
+            });
+        }
+
+        // Función para armar el prompt de sistema dinámico incluyendo las correcciones
+        function buildDynamicSystemPrompt() {
+            let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+            
+            if (Object.keys(correctionsDict).length > 0) {
+                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+                for (const [wrong, right] of Object.entries(correctionsDict)) {
+                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+                    }
+                }
+                basePrompt += customRules;
+            }
+            return basePrompt;
+        }
 
         const payload = {
             systemInstruction: {
-                parts: [{ text: typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.' }]
+                parts: [{ text: buildDynamicSystemPrompt() }]
             },
             contents: [
                 {
@@ -1232,14 +1547,11 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         if (successResponse.candidates && successResponse.candidates.length > 0) {
-            const resultText = successResponse.candidates[0].content.parts[0].text;
+            let resultText = successResponse.candidates[0].content.parts[0].text;
+            resultText = adjustHeadersForSetTotal(resultText);
             transcriptionArea.value = resultText;
             finalTranscript = resultText;
-            
-            // Registrar consumo de tokens
-            if (successResponse.usageMetadata) {
-                quotaManager.recordUsage(successResponse.usageMetadata);
-            }
+            lastSystemText = resultText;
             
             // Guardar en el historial
             saveToHistory(resultText);
@@ -1418,12 +1730,35 @@ function togglePdfButton() {
 
 templateSelect.addEventListener('change', togglePdfButton);
 
+// Función común para ajustar encabezados si el estudio es Set Total y no Panorámica
+function adjustHeadersForSetTotal(text) {
+    if (!text) return text;
+    const estudioMatch = text.match(/TIPO\s+DE\s+ESTUDIO\s*:\s*([^\n\r]+)/i);
+    if (estudioMatch && estudioMatch[1]) {
+        const estudio = estudioMatch[1].toLowerCase();
+        if (estudio.includes("set total") && !estudio.includes("panorámica") && !estudio.includes("panoramica")) {
+            text = text.replace(/^\s*maxilar\s*:/gmi, "ARCADA SUPERIOR:");
+            text = text.replace(/^\s*(mandíbula|mandibula)\s*:/gmi, "ARCADA INFERIOR:");
+        }
+    }
+    return text;
+}
+
 // Función común para preparar el documento procesado
 async function prepareDocument() {
-    const text = transcriptionArea.value.trim();
+    let text = transcriptionArea.value.trim();
     if (!text) {
         alert("Primero dicta o escribe un informe.");
         return null;
+    }
+
+    // Auto-ajustar encabezados si corresponde a un Set Total
+    const adjustedText = adjustHeadersForSetTotal(text);
+    if (adjustedText !== text) {
+        text = adjustedText;
+        transcriptionArea.value = text;
+        finalTranscript = text;
+        localStorage.setItem(AUTOSAVE_KEY, text);
     }
 
     const templateId = templateSelect.value;
@@ -1557,22 +1892,17 @@ if (typeof togglePdfButton === 'function') togglePdfButton();
 
 if (generateWordBtn) {
     generateWordBtn.addEventListener('click', async () => {
+        await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de generar Word
         const docData = await prepareDocument();
         if (docData) {
             window.saveAs(docData.blob, docData.fileNameBase + ".docx");
         }
-        
-        // Aprender correcciones en segundo plano al generar el Word
-        const textToProcess = transcriptionArea.value.trim();
-        const apiKey = localStorage.getItem('gemini_api_key');
-        if (apiKey && lastDictatedText.trim() && textToProcess !== lastDictatedText.trim()) {
-            learnCorrections(lastDictatedText.trim(), textToProcess, apiKey);
-        }
-        lastDictatedText = textToProcess;
+        lastDictatedText = transcriptionArea.value.trim();
     });
 }
 
 if (generatePdfBtn) generatePdfBtn.addEventListener('click', async () => {
+    await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de generar PDF
     const docData = await prepareDocument();
     if (!docData) return;
 
@@ -1862,6 +2192,7 @@ function insertTextAtCursor(textarea, text) {
     const newValue = current.substring(0, start) + prefix + text + suffix + current.substring(end);
     textarea.value = newValue;
     finalTranscript = newValue;
+    lastSystemText = newValue;
 
     // Mover cursor al final del texto insertado
     const newPos = start + prefix.length + text.length + suffix.length;
@@ -2071,6 +2402,7 @@ recognition.onresult = (event) => {
 
         finalTranscript += textToAppend + ' ';
         transcriptionArea.value = finalTranscript;
+        lastSystemText = finalTranscript;
     }
 
     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
@@ -2079,6 +2411,7 @@ const sendGmailBtn = document.getElementById('send-gmail-btn');
 
 if (sendGmailBtn) {
     sendGmailBtn.addEventListener('click', async () => {
+        await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de enviar Gmail
         const originalText = sendGmailBtn.innerHTML;
         try {
             // 1. Preparar el documento (obtenemos el blob)
@@ -2197,12 +2530,1039 @@ const visionAnalyzeBtn = document.getElementById('vision-analyze-btn');
 const visionResultContainer = document.getElementById('vision-result-container');
 const visionResultText = document.getElementById('vision-result-text');
 const visionCopyBtn = document.getElementById('vision-copy-btn');
+const visionModelSelect = document.getElementById('vision-model-select');
 
 let currentVisionBase64 = null;
 let currentVisionMimeType = null;
+let visionModelsLoaded = false;
 
-if (visionBtn) visionBtn.addEventListener('click', () => visionModal.classList.remove('hidden'));
-if (closeVisionBtn) closeVisionBtn.addEventListener('click', () => visionModal.classList.add('hidden'));
+// Variables de control para anotador interactivo
+let annotations = [];
+let activeTool = 'caries';
+let selectedAnnotationIndex = -1;
+let draggedAnnotationIndex = -1;
+let draggedHandle = null; // 'tl', 'tr', 'bl', 'br', 't', 'b', 'l', 'r', 'move'
+let hoveredAnnotationIndex = -1;
+let dragStartPos = { x: 0, y: 0 };
+let drawingNewBox = false;
+let newBoxStart = { x: 0, y: 0 };
+let newBoxEnd = { x: 0, y: 0 };
+
+let activeDrawMode = 'box'; // 'box' o 'lasso'
+let drawingLasso = false;
+let drawingLassoPoints = []; // [{x, y}] en coordenadas del canvas
+
+const HANDLE_SIZE = 6;
+
+// Prompts del sistema para diagnóstico radiológico detallado con detección de objetos en JSON estructurado
+const RADIOLOGY_SYSTEM_PROMPT = `Eres un odontólogo especialista en radiología oral y maxilofacial de nivel mundial. Tu tarea es analizar de forma científica y sumamente rigurosa la imagen radiográfica dental provista (periapical, bite-wing, panorámica, CBCT) y redactar un informe clínico técnico extremadamente preciso en español, además de identificar coordenadas espaciales de sospechas clínicas.
+
+### INSTRUCCIONES DE FORMATO OBLIGATORIAS:
+Debes responder ÚNICAMENTE con un objeto JSON válido (sin envolver en markdown \`\`\`json ni nada similar, solo texto plano JSON válido) con el siguiente esquema:
+{
+  "reportMarkdown": "Texto largo en Markdown del informe clínico...",
+  "suspicions": [
+    {
+      "type": "caries" o "apical" o "oseo",
+      "label": "Caries" o "Lesión Apical" o "Soporte Óseo",
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "description": "Breve descripción clínica del hallazgo con referencia a la pieza o zona (máximo 60 caracteres)"
+    }
+  ]
+}
+
+### EXPLICACIÓN DE COORDENADAS box_2d:
+- box_2d representa la caja delimitadora del hallazgo usando coordenadas normalizadas de 0 a 1000.
+- El formato es [ymin, xmin, ymax, xmax], donde [0, 0, 1000, 1000] representa la imagen completa.
+- xmin y xmax corresponden al eje horizontal (izquierda a derecha de la imagen).
+- ymin y ymax corresponden al eje vertical (arriba a abajo de la imagen).
+- Ejemplo: si hay una caries en el centro, su caja podría ser [400, 350, 480, 420].
+- Asegúrate de detectar con la mayor precisión posible la ubicación de las caries, lesiones apicales o reabsorción ósea.
+
+### DIRECTRICES CLÍNICAS CRÍTICAS (PARA EVITAR ERRORES DE DIAGNÓSTICO):
+1. **PROHIBICIÓN ESTRICTA DE ADIVINAR NÚMEROS DE DIENTES EN IMÁGENES CORTADAS**:
+   - En radiografías periapicales, bite-wing o recortes donde no se aprecie toda la arcada ni la línea media, es IMPOSIBLE determinar con certeza absoluta la numeración exacta de las piezas (FDI o Universal).
+   - **NUNCA inventes, presumas o asumas números específicos de dientes** (por ejemplo, no digas "#38 o #48", "#46", "#11", etc.) a menos que la imagen muestre referencias anatómicas inequívocas o el usuario lo indique explícitamente en su consulta.
+   - En su lugar, describe siempre las piezas de forma descriptivo-anatómica relativa. Por ejemplo:
+     * "pieza molar inferior distal al espacio edéntulo"
+     * "pieza adyacente a la brecha por mesial"
+     * "molar inferior remanente"
+     * "premolar superior"
+   - El uso de números de dientes inventados arruina la credibilidad clínica del informe. Sé humilde y profesional: si no se puede saber el número exacto, descríbelo anatómicamente. Manten esta nomenclatura descriptiva también en las descripciones de las sospechas (suspicions).
+
+2. **IDENTIFICACIÓN DE BRECHAS EDÉNTULAS Y PIEZAS INCLINADAS**:
+   - Observa con atención si faltan dientes (brechas/gaps edéntulos).
+   - Si hay una brecha edéntula, analiza si las piezas vecinas se han inclinado o mesioangulado hacia el espacio vacío (hallazgo clínico muy común e importante). Reporta esto formalmente como "inclinación mesial / mesioangulación de la pieza distal a la brecha".
+
+3. **ANÁLISIS RIGUROSO POR ESTRUCTURA Y DENSIDAD**:
+   - **Coronario:** Evalúa pérdida de estructura, restauraciones (radiopacas) y presencia de lesiones de caries (zonas radiolúcidas). Especifica caras afectadas (mesial, distal, oclusal, vestibular, lingual, cervical) y profundidad (limita a esmalte, penetra dentina, o compromete/está muy próxima a la cámara pulpar).
+   - **Radicular / Endodóntico:** Evalúa número de raíces, morfología, tratamientos de conducto (obturación de conductos radiopaca), indicando si son completos, subobturados, o sobreobturados. Identifica si hay conductos calcificados, instrumentos fracturados, o reabsorción radicular.
+   - **Periodontal / Soporte Óseo:** Describe la altura de las crestas óseas alveolares (reabsorción ósea horizontal o vertical, especificando si es leve, moderada o severa). Evalúa el espacio del ligamento periodontal (ensanchado o conservado) y la integridad de la cortical alveolar (lámina dura).
+   - **Zona Periapical / Apical:** Busca y describe detalladamente cualquier zona radiolúcida periapical (compatible con osteólisis periapical, granuloma, quiste periapical) indicando sus límites (difusos, netos, corticalizados).
+
+4. **EVITA CONTRADICCIONES**:
+   - No digas que un diente es "pieza #38 o #48" en la misma frase. Si no tienes certeza del lado (izquierdo o derecho), explícalo claramente: "Se observa pieza molar inferior en el cuadrante visible (debido al recorte de la radiografía, no es posible determinar si corresponde al tercer o cuarto cuadrante)..."
+
+5. **TERMINOLOGÍA PROFESIONAL Y TONO**:
+   - Utiliza vocabulario clínico estándar de la especialidad de Radiología Oral y Maxilofacial (ej. "radiolucidez", "radiopacidad", "brecha edéntula", "mesioangulación", "zona radiolúcida periapical de límites difusos").
+   - El tono debe ser formal, estructurado y objetivo. Las conclusiones deben presentarse como hipótesis o sugerencias diagnósticas, nunca como un diagnóstico clínico definitivo (ej. "compatible con...", "sugerente de...", "correlacionar clínicamente con...").
+
+### ESTRUCTURA OBLIGATORIA DEL REPORTE (reportMarkdown):
+**1. TIPO DE IMAGEN Y REGIÓN ANATÓMICA**
+- [Identificación técnica del tipo de radiografía y la región visible, p. ej. radiografía retroalveolar/periapical de zona molar inferior]
+
+**2. HALLAZGOS RADIOGRÁFICOS DETALLADOS**
+- **Área Edéntula:** [Si aplica: describir brechas edéntulas y posibles inclinaciones/migraciones de piezas vecinas]
+- **Estructura Coronaria:** [Caries con caras y profundidad, restauraciones, desgastes, etc. Referenciar de forma anatómica relativa]
+- **Estructura Radicular / Endodoncia:** [Tratamiento de conducto, conductos calcificados, morfología, etc.]
+- **Tejidos de Soporte y Zona Apical:** [Altura ósea alveolar, ligamento periodontal, lámina dura, lesiones radiolúcidas periapicales]
+
+**3. RELACIÓN CON ESTRUCTURAS ANATÓMICAS VECINAS**
+- [Relación con el seno maxilar, conducto dentario inferior, corticales óseas, etc.]
+
+**4. CORRELACIÓN CLÍNICA Y SUGERENCIAS DIAGNÓSTICAS**
+- [Hipótesis diagnósticas en orden de probabilidad, p. ej. "Sugerente de caries profunda", "Compatible con periodontitis apical crónica". Recuerda enfatizar que el diagnóstico definitivo requiere correlación clínica presencial].`;
+
+// Función para parsear Markdown simple a HTML en la UI
+function parseMarkdownToHTML(mdText) {
+    if (!mdText) return '';
+    let html = mdText
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+    // Reemplazar **negrita**
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Reemplazar * cursiva o viñetas simples
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    
+    return html;
+}
+
+// Limpia bloques de código markdown de una respuesta de texto JSON
+function cleanJSONString(str) {
+    let clean = str.trim();
+    if (clean.startsWith('```')) {
+        const firstNewLine = clean.indexOf('\n');
+        if (firstNewLine !== -1) {
+            clean = clean.slice(firstNewLine).trim();
+        }
+        if (clean.endsWith('```')) {
+            clean = clean.slice(0, -3).trim();
+        }
+    }
+    if (clean.startsWith('json')) {
+        clean = clean.slice(4).trim();
+    }
+    return clean;
+}
+
+// Mapeo bidireccional de coordenadas
+function normalizedToCanvas(box, canvas) {
+    const [ymin, xmin, ymax, xmax] = box;
+    const cw = canvas.width || 1;
+    const ch = canvas.height || 1;
+    return {
+        x: (xmin / 1000) * cw,
+        y: (ymin / 1000) * ch,
+        width: ((xmax - xmin) / 1000) * cw,
+        height: ((ymax - ymin) / 1000) * ch
+    };
+}
+
+function canvasToNormalized(rect, canvas) {
+    const cw = canvas.width || 1;
+    const ch = canvas.height || 1;
+    const xmin = Math.round((rect.x / cw) * 1000);
+    const ymin = Math.round((rect.y / ch) * 1000);
+    const xmax = Math.round(((rect.x + rect.width) / cw) * 1000);
+    const ymax = Math.round(((rect.y + rect.height) / ch) * 1000);
+    
+    return [
+        Math.max(0, Math.min(1000, Math.min(ymin, ymax))),
+        Math.max(0, Math.min(1000, Math.min(xmin, xmax))),
+        Math.max(0, Math.min(1000, Math.max(ymin, ymax))),
+        Math.max(0, Math.min(1000, Math.max(xmin, xmax)))
+    ];
+}
+
+function scaleAnnotationPoints(ann, oldRect, newRect, canvas) {
+    if (!ann.points || ann.points.length === 0) return;
+    
+    const oldW = oldRect.width || 1;
+    const oldH = oldRect.height || 1;
+    const newW = newRect.width;
+    const newH = newRect.height;
+    
+    ann.points = ann.points.map(pt => {
+        // Convert to canvas coordinates
+        const canvasX = (pt.x / 1000) * canvas.width;
+        const canvasY = (pt.y / 1000) * canvas.height;
+        
+        // Relative percentage inside old bounding box
+        const pctX = (canvasX - oldRect.x) / oldW;
+        const pctY = (canvasY - oldRect.y) / oldH;
+        
+        // Map to new bounding box coordinates
+        let newX = newRect.x + pctX * newW;
+        let newY = newRect.y + pctY * newH;
+        
+        // Clamp to canvas boundaries
+        if (newX < 0) newX = 0;
+        if (newX > canvas.width) newX = canvas.width;
+        if (newY < 0) newY = 0;
+        if (newY > canvas.height) newY = canvas.height;
+        
+        // Re-normalize (0-1000)
+        return {
+            x: (newX / canvas.width) * 1000,
+            y: (newY / canvas.height) * 1000
+        };
+    });
+}
+
+// Colores del anotador
+function getAnnotationColor(type) {
+    switch (type) {
+        case 'caries': return '#ef4444';
+        case 'apical': return '#f59e0b';
+        case 'oseo': return '#3b82f6';
+        default: return '#8b5cf6';
+    }
+}
+
+function getAnnotationFillColor(type, highlighted) {
+    const opacity = highlighted ? '0.25' : '0.12';
+    switch (type) {
+        case 'caries': return `rgba(239, 68, 68, ${opacity})`;
+        case 'apical': return `rgba(245, 158, 11, ${opacity})`;
+        case 'oseo': return `rgba(59, 130, 246, ${opacity})`;
+        default: return `rgba(139, 92, 246, ${opacity})`;
+    }
+}
+
+function capitalizeFirstLetter(string) {
+    if (!string) return '';
+    return string.charAt(0).toUpperCase() + string.slice(1);
+}
+
+// Obtener coordenadas de tiradores
+function getHandleCoords(x, y, width, height) {
+    return {
+        tl: { x: x, y: y },
+        tr: { x: x + width, y: y },
+        bl: { x: x, y: y + height },
+        br: { x: x + width, y: y + height },
+        t:  { x: x + width / 2, y: y },
+        b:  { x: x + width / 2, y: y + height },
+        l:  { x: x, y: y + height / 2 },
+        r:  { x: x + width, y: y + height / 2 }
+    };
+}
+
+// Detección de colisiones
+function getHitTestResult(mx, my) {
+    const canvas = document.getElementById('vision-canvas');
+    if (!canvas) return { type: 'empty' };
+
+    // 1. Check handles of selected annotation first
+    if (selectedAnnotationIndex !== -1) {
+        const ann = annotations[selectedAnnotationIndex];
+        const { x, y, width, height } = normalizedToCanvas(ann.box_2d, canvas);
+        const handles = getHandleCoords(x, y, width, height);
+        
+        for (const h in handles) {
+            const hp = handles[h];
+            if (Math.abs(mx - hp.x) <= HANDLE_SIZE && Math.abs(my - hp.y) <= HANDLE_SIZE) {
+                return { type: 'handle', index: selectedAnnotationIndex, handle: h };
+            }
+        }
+    }
+
+    // 2. Check box hits (reverse order for top-most box)
+    for (let i = annotations.length - 1; i >= 0; i--) {
+        const ann = annotations[i];
+        const { x, y, width, height } = normalizedToCanvas(ann.box_2d, canvas);
+        if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
+            return { type: 'box', index: i, handle: 'move' };
+        }
+    }
+
+    return { type: 'empty' };
+}
+
+// Redibujar anotaciones en el canvas
+function drawAnnotations() {
+    const canvas = document.getElementById('vision-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    annotations.forEach((ann, index) => {
+        const { x, y, width, height } = normalizedToCanvas(ann.box_2d, canvas);
+        const color = getAnnotationColor(ann.type);
+        const isSelected = index === selectedAnnotationIndex;
+        const isHovered = index === hoveredAnnotationIndex;
+
+        // Borde y relleno
+        ctx.fillStyle = getAnnotationFillColor(ann.type, isSelected || isHovered);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isSelected ? 2.5 : (isHovered ? 2 : 1.5);
+        if (isSelected) {
+            ctx.setLineDash([4, 4]);
+        } else {
+            ctx.setLineDash([]);
+        }
+
+        if (ann.points && ann.points.length > 0) {
+            // Dibujar polígono del lazo
+            ctx.beginPath();
+            ann.points.forEach((pt, ptIdx) => {
+                const ptX = (pt.x / 1000) * canvas.width;
+                const ptY = (pt.y / 1000) * canvas.height;
+                if (ptIdx === 0) {
+                    ctx.moveTo(ptX, ptY);
+                } else {
+                    ctx.lineTo(ptX, ptY);
+                }
+            });
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            // Rectángulo tradicional
+            ctx.fillRect(x, y, width, height);
+            ctx.strokeRect(x, y, width, height);
+        }
+        ctx.setLineDash([]);
+
+        // Texto
+        const labelText = ann.description || ann.label || capitalizeFirstLetter(ann.type);
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textBaseline = 'top';
+        const textWidth = ctx.measureText(labelText).width;
+        
+        ctx.fillStyle = color;
+        const labelY = y - 14 >= 0 ? y - 14 : y;
+        ctx.fillRect(x, labelY, textWidth + 8, 14);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(labelText, x + 4, labelY + 2);
+
+        // Tiradores (caja delimitadora)
+        if (isSelected) {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+
+            const handles = getHandleCoords(x, y, width, height);
+            for (const h in handles) {
+                const hp = handles[h];
+                ctx.beginPath();
+                ctx.rect(hp.x - HANDLE_SIZE / 2, hp.y - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+    });
+
+    // Caja temporal al dibujar
+    if (drawingNewBox && newBoxStart && newBoxEnd) {
+        const x = Math.min(newBoxStart.x, newBoxEnd.x);
+        const y = Math.min(newBoxStart.y, newBoxEnd.y);
+        const w = Math.abs(newBoxEnd.x - newBoxStart.x);
+        const h = Math.abs(newBoxEnd.y - newBoxStart.y);
+        const color = getAnnotationColor(activeTool);
+        
+        ctx.fillStyle = getAnnotationFillColor(activeTool, true);
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+    }
+
+    // Lazo temporal al dibujar
+    if (drawingLasso && drawingLassoPoints.length > 0) {
+        const color = getAnnotationColor(activeTool);
+        ctx.fillStyle = getAnnotationFillColor(activeTool, true);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        
+        ctx.beginPath();
+        drawingLassoPoints.forEach((pt, ptIdx) => {
+            if (ptIdx === 0) {
+                ctx.moveTo(pt.x, pt.y);
+            } else {
+                ctx.lineTo(pt.x, pt.y);
+            }
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+    }
+}
+
+// Redimensionar tamaño físico del Canvas interactivo
+function resizeCanvas() {
+    const canvas = document.getElementById('vision-canvas');
+    const img = document.getElementById('vision-preview-img');
+    const container = document.getElementById('vision-canvas-container');
+    if (!canvas || !img || !container) return;
+    
+    if (img.clientWidth > 0 && img.clientHeight > 0) {
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        container.style.width = img.clientWidth + 'px';
+        container.style.height = img.clientHeight + 'px';
+        drawAnnotations();
+    }
+}
+
+// Actualizar cursor del canvas
+function updateCursorAndHover(e) {
+    const canvas = document.getElementById('vision-canvas');
+    if (!canvas) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    const hit = getHitTestResult(mx, my);
+    
+    let prevHovered = hoveredAnnotationIndex;
+    if (hit.type === 'box') {
+        hoveredAnnotationIndex = hit.index;
+    } else {
+        hoveredAnnotationIndex = -1;
+    }
+
+    if (prevHovered !== hoveredAnnotationIndex) {
+        drawAnnotations();
+        updateAnnotationsHighlightInList();
+    }
+
+    if (hit.type === 'handle') {
+        const h = hit.handle;
+        if (h === 'tl' || h === 'br') canvas.style.cursor = 'nwse-resize';
+        else if (h === 'tr' || h === 'bl') canvas.style.cursor = 'nesw-resize';
+        else if (h === 't' || h === 'b') canvas.style.cursor = 'ns-resize';
+        else if (h === 'l' || h === 'r') canvas.style.cursor = 'ew-resize';
+    } else if (hit.type === 'box') {
+        canvas.style.cursor = 'move';
+    } else {
+        canvas.style.cursor = 'crosshair';
+    }
+}
+
+// Sincronizar listado lateral de hallazgos
+function updateAnnotationsList() {
+    const listContainer = document.getElementById('annotations-list-container');
+    const divider = document.getElementById('annotations-divider');
+    const list = document.getElementById('annotations-list');
+    
+    if (!listContainer || !list) return;
+
+    if (annotations.length === 0) {
+        listContainer.classList.add('hidden');
+        if (divider) divider.classList.add('hidden');
+        list.innerHTML = '';
+        return;
+    }
+
+    listContainer.classList.remove('hidden');
+    if (divider) divider.classList.remove('hidden');
+
+    list.innerHTML = annotations.map((ann, idx) => {
+        const color = getAnnotationColor(ann.type);
+        const labelText = ann.description || ann.label || capitalizeFirstLetter(ann.type);
+        const isSelected = idx === selectedAnnotationIndex;
+        const highlightClass = isSelected ? 'highlighted' : '';
+        
+        return `
+            <div class="annotation-item ${highlightClass}" data-id="${ann.id}" data-index="${idx}"
+                 onmouseenter="highlightAnnotation(${ann.id})" 
+                 onmouseleave="unhighlightAnnotation(${ann.id})"
+                 onclick="selectAnnotationFromList(${ann.id})">
+                <span class="annotation-item-color-bullet" style="background: ${color};"></span>
+                <input type="text" class="annotation-item-input" value="${labelText}" 
+                       oninput="updateAnnotationLabel(${ann.id}, this.value)"
+                       onclick="event.stopPropagation()">
+                <button class="annotation-item-delete-btn" onclick="event.stopPropagation(); deleteAnnotation(${ann.id})" title="Eliminar hallazgo">
+                    <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                </button>
+            </div>
+        `;
+    }).join('');
+
+    if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+    }
+}
+
+function updateAnnotationsHighlightInList() {
+    const items = document.querySelectorAll('.annotation-item');
+    items.forEach(item => {
+        const idx = parseInt(item.getAttribute('data-index'));
+        if (idx === selectedAnnotationIndex || idx === hoveredAnnotationIndex) {
+            item.classList.add('highlighted');
+        } else {
+            item.classList.remove('highlighted');
+        }
+    });
+}
+
+// Definición de funciones globales asociadas a controles de la vista
+window.selectAnnotationTool = function(type) {
+    activeTool = type;
+    const buttons = document.querySelectorAll('#vision-annotation-toolbar .tool-btn');
+    buttons.forEach(btn => {
+        if (btn.getAttribute('data-type') === type) {
+            btn.classList.add('active');
+            if (type === 'caries') {
+                btn.style.background = 'rgba(239, 68, 68, 0.2)';
+                btn.style.borderColor = '#ef4444';
+                btn.style.color = '#fca5a5';
+            } else if (type === 'apical') {
+                btn.style.background = 'rgba(245, 158, 11, 0.2)';
+                btn.style.borderColor = '#f59e0b';
+                btn.style.color = '#fde047';
+            } else if (type === 'oseo') {
+                btn.style.background = 'rgba(59, 130, 246, 0.2)';
+                btn.style.borderColor = '#3b82f6';
+                btn.style.color = '#93c5fd';
+            }
+        } else {
+            btn.classList.remove('active');
+            const btnType = btn.getAttribute('data-type');
+            if (btnType === 'caries') {
+                btn.style.background = 'rgba(239, 68, 68, 0.1)';
+                btn.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                btn.style.color = '#fca5a5';
+            } else if (btnType === 'apical') {
+                btn.style.background = 'rgba(245, 158, 11, 0.1)';
+                btn.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+                btn.style.color = '#fde047';
+            } else if (btnType === 'oseo') {
+                btn.style.background = 'rgba(59, 130, 246, 0.1)';
+                btn.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+                btn.style.color = '#93c5fd';
+            }
+        }
+    });
+};
+
+window.setDrawMode = function(mode) {
+    activeDrawMode = mode;
+    const boxBtn = document.getElementById('draw-mode-box');
+    const lassoBtn = document.getElementById('draw-mode-lasso');
+    if (!boxBtn || !lassoBtn) return;
+    
+    if (mode === 'box') {
+        boxBtn.classList.add('active');
+        boxBtn.style.background = 'rgba(168, 85, 247, 0.2)';
+        boxBtn.style.borderColor = '#a855f7';
+        boxBtn.style.color = '#e9d5ff';
+        
+        lassoBtn.classList.remove('active');
+        lassoBtn.style.background = 'rgba(255, 255, 255, 0.05)';
+        lassoBtn.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        lassoBtn.style.color = 'var(--text-secondary)';
+    } else {
+        lassoBtn.classList.add('active');
+        lassoBtn.style.background = 'rgba(168, 85, 247, 0.2)';
+        lassoBtn.style.borderColor = '#a855f7';
+        lassoBtn.style.color = '#e9d5ff';
+        
+        boxBtn.classList.remove('active');
+        boxBtn.style.background = 'rgba(255, 255, 255, 0.05)';
+        boxBtn.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        boxBtn.style.color = 'var(--text-secondary)';
+    }
+};
+
+window.clearAllAnnotations = function() {
+    if (confirm('¿Seguro que deseas eliminar todas las anotaciones?')) {
+        annotations = [];
+        selectedAnnotationIndex = -1;
+        hoveredAnnotationIndex = -1;
+        updateAnnotationsList();
+        drawAnnotations();
+    }
+};
+
+window.deleteAnnotation = function(id) {
+    const index = annotations.findIndex(ann => ann.id === id);
+    if (index !== -1) {
+        annotations.splice(index, 1);
+        if (selectedAnnotationIndex === index) {
+            selectedAnnotationIndex = -1;
+        } else if (selectedAnnotationIndex > index) {
+            selectedAnnotationIndex--;
+        }
+        
+        if (hoveredAnnotationIndex === index) {
+            hoveredAnnotationIndex = -1;
+        } else if (hoveredAnnotationIndex > index) {
+            hoveredAnnotationIndex--;
+        }
+
+        updateAnnotationsList();
+        drawAnnotations();
+    }
+};
+
+window.updateAnnotationLabel = function(id, text) {
+    const ann = annotations.find(ann => ann.id === id);
+    if (ann) {
+        ann.description = text;
+        drawAnnotations();
+    }
+};
+
+window.highlightAnnotation = function(id) {
+    const index = annotations.findIndex(ann => ann.id === id);
+    if (index !== -1) {
+        hoveredAnnotationIndex = index;
+        drawAnnotations();
+        const el = document.querySelector(`.annotation-item[data-id="${id}"]`);
+        if (el) el.classList.add('highlighted');
+    }
+};
+
+window.unhighlightAnnotation = function(id) {
+    const index = annotations.findIndex(ann => ann.id === id);
+    if (index !== -1 && hoveredAnnotationIndex === index) {
+        hoveredAnnotationIndex = -1;
+        drawAnnotations();
+        const el = document.querySelector(`.annotation-item[data-id="${id}"]`);
+        if (el) el.classList.remove('highlighted');
+    }
+};
+
+window.selectAnnotationFromList = function(id) {
+    const index = annotations.findIndex(ann => ann.id === id);
+    if (index !== -1) {
+        selectedAnnotationIndex = index;
+        drawAnnotations();
+        updateAnnotationsHighlightInList();
+    }
+};
+
+// Fusionar imagen de fondo y anotaciones a alta resolución y descargar
+window.exportAnnotatedImage = function() {
+    const img = document.getElementById('vision-preview-img');
+    if (!img || !img.src || annotations.length === 0) {
+        alert('Carga una imagen y realiza anotaciones antes de guardar.');
+        return;
+    }
+
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = img.naturalWidth;
+    exportCanvas.height = img.naturalHeight;
+    const ctx = exportCanvas.getContext('2d');
+
+    // Pintar fondo original
+    ctx.drawImage(img, 0, 0);
+
+    // Pintar anotaciones escaladas
+    annotations.forEach(ann => {
+        const [ymin, xmin, ymax, xmax] = ann.box_2d;
+        const x = (xmin / 1000) * img.naturalWidth;
+        const y = (ymin / 1000) * img.naturalHeight;
+        const w = ((xmax - xmin) / 1000) * img.naturalWidth;
+        const h = ((ymax - ymin) / 1000) * img.naturalHeight;
+        const color = getAnnotationColor(ann.type);
+        const lineWidth = Math.max(2, Math.round(img.naturalWidth / 400));
+
+        ctx.fillStyle = getAnnotationFillColor(ann.type, false);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+
+        if (ann.points && ann.points.length > 0) {
+            // Pintar polígono del lazo escalado
+            ctx.beginPath();
+            ann.points.forEach((pt, ptIdx) => {
+                const ptX = (pt.x / 1000) * img.naturalWidth;
+                const ptY = (pt.y / 1000) * img.naturalHeight;
+                if (ptIdx === 0) {
+                    ctx.moveTo(ptX, ptY);
+                } else {
+                    ctx.lineTo(ptX, ptY);
+                }
+            });
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            // Relleno y borde rectangular tradicional
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeRect(x, y, w, h);
+        }
+
+        // Etiqueta de texto
+        const labelText = ann.description || ann.label || capitalizeFirstLetter(ann.type);
+        const fontSize = Math.max(12, Math.round(img.naturalWidth / 60));
+        ctx.font = `bold ${fontSize}px sans-serif`;
+        ctx.textBaseline = 'top';
+        const textWidth = ctx.measureText(labelText).width;
+        
+        const labelHeight = fontSize + 6;
+        const labelY = y - labelHeight >= 0 ? y - labelHeight : y;
+
+        // Fondo de etiqueta
+        ctx.fillStyle = color;
+        ctx.fillRect(x, labelY, textWidth + 10, labelHeight);
+
+        // Texto de etiqueta
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(labelText, x + 5, labelY + 3);
+    });
+
+    const link = document.createElement('a');
+    link.download = 'radiografia_anotada.png';
+    link.href = exportCanvas.toDataURL('image/png');
+    link.click();
+};
+
+// Inicializar eventos de ratón en Canvas
+function initCanvasEvents() {
+    const canvas = document.getElementById('vision-canvas');
+    if (!canvas) return;
+
+    canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        if (mx < 0) mx = 0;
+        if (mx > canvas.width) mx = canvas.width;
+        if (my < 0) my = 0;
+        if (my > canvas.height) my = canvas.height;
+
+        const hit = getHitTestResult(mx, my);
+        dragStartPos = { x: mx, y: my };
+
+        if (hit.type === 'handle') {
+            draggedAnnotationIndex = hit.index;
+            draggedHandle = hit.handle;
+        } else if (hit.type === 'box') {
+            draggedAnnotationIndex = hit.index;
+            draggedHandle = 'move';
+            selectedAnnotationIndex = hit.index;
+            updateAnnotationsList();
+        } else {
+            if (activeDrawMode === 'lasso') {
+                drawingLasso = true;
+                drawingLassoPoints = [{ x: mx, y: my }];
+                selectedAnnotationIndex = -1;
+                updateAnnotationsList();
+            } else {
+                drawingNewBox = true;
+                newBoxStart = { x: mx, y: my };
+                newBoxEnd = { x: mx, y: my };
+                selectedAnnotationIndex = -1;
+                updateAnnotationsList();
+            }
+        }
+        drawAnnotations();
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        if (mx < 0) mx = 0;
+        if (mx > canvas.width) mx = canvas.width;
+        if (my < 0) my = 0;
+        if (my > canvas.height) my = canvas.height;
+
+        if (drawingLasso) {
+            // Solo registrar si el punto es diferente del último para evitar duplicados
+            const lastPt = drawingLassoPoints[drawingLassoPoints.length - 1];
+            if (!lastPt || Math.abs(lastPt.x - mx) > 1 || Math.abs(lastPt.y - my) > 1) {
+                drawingLassoPoints.push({ x: mx, y: my });
+            }
+            drawAnnotations();
+        } else if (drawingNewBox) {
+            newBoxEnd = { x: mx, y: my };
+            drawAnnotations();
+        } else if (draggedAnnotationIndex !== -1) {
+            const dx = mx - dragStartPos.x;
+            const dy = my - dragStartPos.y;
+            
+            const ann = annotations[draggedAnnotationIndex];
+            let canvasRect = normalizedToCanvas(ann.box_2d, canvas);
+            let oldCanvasRect = { ...canvasRect };
+
+            if (draggedHandle === 'move') {
+                canvasRect.x += dx;
+                canvasRect.y += dy;
+                
+                // Limitar al canvas
+                if (canvasRect.x < 0) canvasRect.x = 0;
+                if (canvasRect.y < 0) canvasRect.y = 0;
+                if (canvasRect.x + canvasRect.width > canvas.width) canvasRect.x = canvas.width - canvasRect.width;
+                if (canvasRect.y + canvasRect.height > canvas.height) canvasRect.y = canvas.height - canvasRect.height;
+            } else {
+                // Redimensión
+                const h = draggedHandle;
+                if (h.includes('t')) {
+                    canvasRect.y += dy;
+                    canvasRect.height -= dy;
+                }
+                if (h.includes('b')) {
+                    canvasRect.height += dy;
+                }
+                if (h.includes('l')) {
+                    canvasRect.x += dx;
+                    canvasRect.width -= dx;
+                }
+                if (h.includes('r')) {
+                    canvasRect.width += dx;
+                }
+
+                // Dimensiones mínimas
+                const minDim = 6;
+                if (canvasRect.width < minDim) {
+                    if (h.includes('l')) {
+                        const right = canvasRect.x + canvasRect.width;
+                        canvasRect.x = right - minDim;
+                        canvasRect.width = minDim;
+                    } else if (h.includes('r')) {
+                        canvasRect.width = minDim;
+                    }
+                }
+                if (canvasRect.height < minDim) {
+                    if (h.includes('t')) {
+                        const bottom = canvasRect.y + canvasRect.height;
+                        canvasRect.y = bottom - minDim;
+                        canvasRect.height = minDim;
+                    } else if (h.includes('b')) {
+                        canvasRect.height = minDim;
+                    }
+                }
+
+                // Limitar al canvas
+                if (canvasRect.x < 0) {
+                    canvasRect.width += canvasRect.x;
+                    canvasRect.x = 0;
+                }
+                if (canvasRect.y < 0) {
+                    canvasRect.height += canvasRect.y;
+                    canvasRect.y = 0;
+                }
+                if (canvasRect.x + canvasRect.width > canvas.width) {
+                    canvasRect.width = canvas.width - canvasRect.x;
+                }
+                if (canvasRect.y + canvasRect.height > canvas.height) {
+                    canvasRect.height = canvas.height - canvasRect.y;
+                }
+            }
+
+            // Escalar puntos del lazo correspondientemente al mover/redimensionar la caja
+            if (ann.points && ann.points.length > 0) {
+                scaleAnnotationPoints(ann, oldCanvasRect, canvasRect, canvas);
+            }
+
+            ann.box_2d = canvasToNormalized(canvasRect, canvas);
+            dragStartPos = { x: mx, y: my };
+            drawAnnotations();
+            updateAnnotationsHighlightInList();
+        } else {
+            updateCursorAndHover(e);
+        }
+    });
+
+    canvas.addEventListener('mouseup', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        if (mx < 0) mx = 0;
+        if (mx > canvas.width) mx = canvas.width;
+        if (my < 0) my = 0;
+        if (my > canvas.height) my = canvas.height;
+
+        if (drawingLasso) {
+            drawingLasso = false;
+            if (drawingLassoPoints.length >= 3) {
+                let minX = Infinity;
+                let maxX = -Infinity;
+                let minY = Infinity;
+                let maxY = -Infinity;
+                
+                drawingLassoPoints.forEach(pt => {
+                    if (pt.x < minX) minX = pt.x;
+                    if (pt.x > maxX) maxX = pt.x;
+                    if (pt.y < minY) minY = pt.y;
+                    if (pt.y > maxY) maxY = pt.y;
+                });
+                
+                const w = maxX - minX;
+                const h = maxY - minY;
+                
+                if (w > 4 && h > 4) {
+                    const normalizedPoints = drawingLassoPoints.map(pt => ({
+                        x: (pt.x / canvas.width) * 1000,
+                        y: (pt.y / canvas.height) * 1000
+                    }));
+                    
+                    const boxRect = {
+                        x: minX,
+                        y: minY,
+                        width: w,
+                        height: h
+                    };
+                    const box_2d = canvasToNormalized(boxRect, canvas);
+                    
+                    const newAnn = {
+                        id: Date.now(),
+                        type: activeTool,
+                        box_2d: box_2d,
+                        points: normalizedPoints,
+                        description: capitalizeFirstLetter(activeTool)
+                    };
+                    annotations.push(newAnn);
+                    selectedAnnotationIndex = annotations.length - 1;
+                    updateAnnotationsList();
+                }
+            }
+            drawingLassoPoints = [];
+        } else if (drawingNewBox) {
+            drawingNewBox = false;
+            const w = Math.abs(mx - newBoxStart.x);
+            const h = Math.abs(my - newBoxStart.y);
+            
+            if (w > 6 && h > 6) {
+                const boxRect = {
+                    x: Math.min(newBoxStart.x, mx),
+                    y: Math.min(newBoxStart.y, my),
+                    width: w,
+                    height: h
+                };
+                const box_2d = canvasToNormalized(boxRect, canvas);
+                const newAnn = {
+                    id: Date.now(),
+                    type: activeTool,
+                    box_2d: box_2d,
+                    description: capitalizeFirstLetter(activeTool)
+                };
+                annotations.push(newAnn);
+                selectedAnnotationIndex = annotations.length - 1;
+                updateAnnotationsList();
+            }
+        }
+        
+        draggedAnnotationIndex = -1;
+        draggedHandle = null;
+        drawAnnotations();
+    });
+}
+
+// Carga dinámica de modelos de Gemini
+async function loadVisionModels() {
+    const apiKey = localStorage.getItem('gemini_api_key');
+    if (!apiKey || visionModelsLoaded) return;
+    try {
+        const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+        if (!listRes.ok) return;
+        const listData = await listRes.json();
+        
+        let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
+        availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
+
+        const isModernModel = (name) => {
+            const n = name.toLowerCase();
+            return n.includes('1.5') || n.includes('2.0') || n.includes('2.5') || n.includes('pro') || n.includes('flash');
+        };
+        availableModels = availableModels.filter(m => isModernModel(m.name));
+
+        if (visionModelSelect && availableModels.length > 0) {
+            // Limpiar excepto auto y Claude 4.7 Opus
+            visionModelSelect.innerHTML = `
+                <option value="auto">🔍 Selección Automática (Mejor disponible)</option>
+                <option value="claude-4.7-opus">Claude 4.7 Opus (Anthropic)</option>
+            `;
+            
+            // Priorización: 1) Pro, 2) Flash 2.x, 3) Flash 1.5
+            const getPriority = (name) => {
+                const n = name.toLowerCase();
+                if (n.includes('2.5-pro') || n.includes('2.0-pro') || n.includes('1.5-pro')) return 3;
+                if (n.includes('2.5-flash') || n.includes('2.0-flash')) return 2;
+                if (n.includes('1.5-flash')) return 1;
+                return 0;
+            };
+            availableModels.sort((a, b) => getPriority(b.name) - getPriority(a.name));
+
+            availableModels.forEach(model => {
+                const mName = model.name.replace('models/', '');
+                const option = document.createElement('option');
+                option.value = mName;
+                
+                let displayName = mName;
+                if (mName.includes('1.5-pro')) displayName = 'Gemini 1.5 Pro (Alta Precisión)';
+                else if (mName.includes('2.0-flash-exp')) displayName = 'Gemini 2.0 Flash (Experimental)';
+                else if (mName.includes('2.0-flash')) displayName = 'Gemini 2.0 Flash (Rápido y Preciso)';
+                else if (mName.includes('1.5-flash-8b')) displayName = 'Gemini 1.5 Flash 8B (Ligero)';
+                else if (mName.includes('1.5-flash')) displayName = 'Gemini 1.5 Flash (Rápido)';
+                
+                option.textContent = displayName;
+                visionModelSelect.appendChild(option);
+            });
+            visionModelsLoaded = true;
+        }
+    } catch (err) {
+        console.error("Error al cargar modelos de visión:", err);
+    }
+}
+
+if (visionBtn) {
+    visionBtn.addEventListener('click', () => {
+        visionModal.classList.remove('hidden');
+        loadVisionModels();
+        setTimeout(resizeCanvas, 100);
+    });
+}
+if (closeVisionBtn) {
+    closeVisionBtn.addEventListener('click', () => visionModal.classList.add('hidden'));
+}
+
+window.addEventListener('resize', resizeCanvas);
+
+// Definir la función de chips de prompt globalmente
+window.selectPresetChip = function(chip) {
+    const presetChips = document.querySelectorAll('.preset-chip');
+    presetChips.forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    const visionPromptInput = document.getElementById('vision-prompt-input');
+    if (visionPromptInput) {
+        visionPromptInput.value = chip.getAttribute('data-prompt');
+        visionPromptInput.focus();
+    }
+};
+
+// Configurar interactividad de los chips de presets (dinámico)
+const presetChips = document.querySelectorAll('.preset-chip');
+presetChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+        window.selectPresetChip(chip);
+    });
+});
+
+if (visionPromptInput) {
+    visionPromptInput.addEventListener('input', () => {
+        let matched = false;
+        presetChips.forEach(chip => {
+            if (visionPromptInput.value === chip.getAttribute('data-prompt')) {
+                chip.classList.add('active');
+                matched = true;
+            } else {
+                chip.classList.remove('active');
+            }
+        });
+    });
+}
+
+// Iniciar escuchas para canvas
+initCanvasEvents();
 
 // Manejar pegado de imagen (Ctrl+V) en el área completa del modal
 if (visionModal) {
@@ -2225,16 +3585,28 @@ if (visionModal) {
             reader.onload = (event) => {
                 const dataUrl = event.target.result;
                 if (visionPreviewImg) {
+                    visionPreviewImg.onload = () => {
+                        resizeCanvas();
+                        const toolbar = document.getElementById('vision-annotation-toolbar');
+                        if (toolbar) toolbar.classList.remove('hidden');
+                    };
                     visionPreviewImg.src = dataUrl;
                     visionPreviewImg.classList.remove('hidden');
                 }
+                const container = document.getElementById('vision-canvas-container');
+                if (container) container.classList.remove('hidden');
+                
                 const placeholder = document.querySelector('.paste-placeholder');
                 if (placeholder) placeholder.style.display = 'none';
                 
-                // Extraer solo la parte base64 (remover data:image/png;base64,)
                 currentVisionBase64 = dataUrl.split(',')[1];
                 
-                // Hacer focus en el input para que el usuario escriba qué quiere
+                // Limpiar anotaciones al cargar una nueva imagen
+                annotations = [];
+                selectedAnnotationIndex = -1;
+                hoveredAnnotationIndex = -1;
+                updateAnnotationsList();
+                
                 setTimeout(() => { if (visionPromptInput) visionPromptInput.focus(); }, 100);
             };
             reader.readAsDataURL(blob);
@@ -2242,7 +3614,7 @@ if (visionModal) {
     });
 }
 
-// También permitir Drag & Drop
+// Drag & Drop de imagen
 if (visionPasteArea) {
     visionPasteArea.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -2269,13 +3641,28 @@ if (visionPasteArea) {
                 reader.onload = (event) => {
                     const dataUrl = event.target.result;
                     if (visionPreviewImg) {
+                        visionPreviewImg.onload = () => {
+                            resizeCanvas();
+                            const toolbar = document.getElementById('vision-annotation-toolbar');
+                            if (toolbar) toolbar.classList.remove('hidden');
+                        };
                         visionPreviewImg.src = dataUrl;
                         visionPreviewImg.classList.remove('hidden');
                     }
+                    const container = document.getElementById('vision-canvas-container');
+                    if (container) container.classList.remove('hidden');
+                    
                     const placeholder = document.querySelector('.paste-placeholder');
                     if (placeholder) placeholder.style.display = 'none';
                     
                     currentVisionBase64 = dataUrl.split(',')[1];
+                    
+                    // Limpiar anotaciones al cargar una nueva imagen
+                    annotations = [];
+                    selectedAnnotationIndex = -1;
+                    hoveredAnnotationIndex = -1;
+                    updateAnnotationsList();
+                    
                     setTimeout(() => { if (visionPromptInput) visionPromptInput.focus(); }, 100);
                 };
                 reader.readAsDataURL(file);
@@ -2288,10 +3675,21 @@ if (visionPasteArea) {
 
 if (visionAnalyzeBtn) {
     visionAnalyzeBtn.addEventListener('click', async () => {
-        const apiKey = localStorage.getItem('gemini_api_key');
-        if (!apiKey) {
-            alert('Debes configurar tu API Key de Gemini primero en la configuración.');
-            return;
+        const selectedModelValue = visionModelSelect ? visionModelSelect.value : 'auto';
+        let apiKey = null;
+
+        if (selectedModelValue === 'claude-4.7-opus') {
+            const anthropicKey = localStorage.getItem('anthropic_api_key');
+            if (!anthropicKey) {
+                alert('Debes configurar tu API Key de Anthropic primero en la configuración.');
+                return;
+            }
+        } else {
+            apiKey = localStorage.getItem('gemini_api_key');
+            if (!apiKey) {
+                alert('Debes configurar tu API Key de Gemini primero en la configuración.');
+                return;
+            }
         }
 
         if (!currentVisionBase64) {
@@ -2307,44 +3705,139 @@ if (visionAnalyzeBtn) {
         visionResultContainer.classList.add('hidden');
 
         try {
-            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-            if (!listRes.ok) throw new Error("API Key inválida o no se pudo contactar al servidor de Google.");
-            
-            const listData = await listRes.json();
-            
-            // Filtrar modelos que soportan generación de contenido
-            let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
-            availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
+            let successResponse = null;
+            let lastErrorMsg = "";
 
-            // Priorizar modelos 1.5 flash y pro
-            const priorityOrder = [
-                'gemini-1.5-flash',
-                'gemini-1.5-flash-latest',
-                'gemini-1.5-flash-8b',
-                'gemini-1.5-pro',
-                'gemini-1.5-pro-latest',
-                'gemini-2.0-flash-exp'
-            ];
+            if (selectedModelValue === 'claude-4.7-opus') {
+                const anthropicKey = localStorage.getItem('anthropic_api_key');
+                const payload = {
+                    model: "claude-opus-4-7",
+                    max_tokens: 4096,
+                    system: RADIOLOGY_SYSTEM_PROMPT,
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                {
+                                    type: "image",
+                                    source: {
+                                        type: "base64",
+                                        media_type: currentVisionMimeType,
+                                        data: currentVisionBase64
+                                    }
+                                },
+                                {
+                                    type: "text",
+                                    text: userPrompt
+                                }
+                            ]
+                        }
+                    ]
+                };
 
-            let validModels = [];
-            priorityOrder.forEach(pName => {
-                const found = availableModels.find(m => m.name.endsWith(pName));
-                if (found) validModels.push(found);
-            });
+                try {
+                    const response = await fetch('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-api-key': anthropicKey,
+                            'anthropic-version': '2023-06-01',
+                            'anthropic-dangerous-direct-browser-access': 'true'
+                        },
+                        body: JSON.stringify(payload)
+                    });
 
-            // Agregar el resto
-            availableModels.forEach(m => {
-                const isModern = m.name.includes('1.5') || m.name.includes('2.0') || m.name.includes('2.5');
-                if (isModern && !validModels.find(vm => vm.name === m.name)) {
-                    validModels.push(m);
+                    if (response.ok) {
+                        const responseData = await response.json();
+                        if (responseData.content && responseData.content.length > 0 && responseData.content[0].text) {
+                            const resultText = responseData.content[0].text;
+                            successResponse = {
+                                candidates: [
+                                    {
+                                        content: {
+                                            parts: [
+                                                { text: resultText }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            };
+                        } else {
+                            lastErrorMsg = "No se pudo obtener respuesta de Claude.";
+                        }
+                    } else {
+                        const errData = await response.json().catch(() => ({}));
+                        lastErrorMsg = errData.error?.message || `HTTP ${response.status}`;
+                    }
+                } catch (err) {
+                    console.error("Error al consultar Anthropic:", err);
+                    if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('CORS')) {
+                        throw new Error(`Error de red al conectar con Anthropic. Esto suele deberse a restricciones de CORS del navegador para llamadas directas a APIs externas.\n\nSolución: Instala y activa una extensión de CORS bypass (ej: 'Allow CORS: Access-Control-Allow-Origin') en tu navegador o configura un proxy local.`);
+                    } else {
+                        throw err;
+                    }
                 }
-            });
+            } else {
+                let validModels = [];
+                let availableModels = [];
 
-            if (validModels.length === 0) throw new Error("Tu cuenta no tiene modelos estables (1.5+) habilitados.");
+            try {
+                const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                if (listRes.ok) {
+                    const listData = await listRes.json();
+                    availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
+                    availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
+                }
+            } catch (listErr) {
+                console.warn("No se pudo obtener la lista de modelos de Gemini dinámicamente en visión. Usando fallbacks.", listErr);
+            }
+
+            if (availableModels.length > 0) {
+                if (selectedModelValue !== 'auto') {
+                    const found = availableModels.find(m => m.name.endsWith(selectedModelValue));
+                    if (found) validModels.push(found);
+                }
+
+                const priorityOrder = [
+                    'gemini-2.5-flash',
+                    'gemini-2.0-flash',
+                    'gemini-2.0-flash-exp',
+                    'gemini-1.5-pro',
+                    'gemini-1.5-pro-latest',
+                    'gemini-1.5-flash',
+                    'gemini-1.5-flash-latest',
+                    'gemini-1.5-flash-8b'
+                ];
+
+                priorityOrder.forEach(pName => {
+                    const found = availableModels.find(m => m.name.endsWith(pName));
+                    if (found && !validModels.find(vm => vm.name === found.name)) {
+                        validModels.push(found);
+                    }
+                });
+
+                availableModels.forEach(m => {
+                    const isModern = m.name.includes('1.5') || m.name.includes('2.0') || m.name.includes('2.5') || m.name.includes('pro') || m.name.includes('flash');
+                    if (isModern && !validModels.find(vm => vm.name === m.name)) {
+                        validModels.push(m);
+                    }
+                });
+            }
+
+            if (validModels.length === 0) {
+                if (selectedModelValue !== 'auto') {
+                    validModels.push({ name: `models/${selectedModelValue}` });
+                } else {
+                    const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'];
+                    fallbackModels.forEach(mName => {
+                        validModels.push({ name: `models/${mName}` });
+                    });
+                }
+            }
 
             const payload = {
                 systemInstruction: {
-                    parts: [{ text: "Eres un experto radiólogo maxilofacial. Analiza la imagen proporcionada y responde a la duda del usuario utilizando terminología técnica precisa (bordes, radiolucidez, corticalización, etc.). No des un diagnóstico definitivo, sino describe radiográficamente los hallazgos para que el odontólogo pueda incorporarlos a su informe." }]
+                    parts: [{ text: RADIOLOGY_SYSTEM_PROMPT }]
                 },
                 contents: [
                     {
@@ -2360,13 +3853,15 @@ if (visionAnalyzeBtn) {
                         ]
                     }
                 ],
-                generationConfig: { temperature: 0.3 }
+                generationConfig: { 
+                    temperature: 0.2,
+                    responseMimeType: "application/json"
+                }
             };
 
             let successResponse = null;
             let lastErrorMsg = "";
 
-            // Probar los modelos uno por uno
             for (const model of validModels) {
                 const modelName = model.name.replace('models/', '');
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
@@ -2384,12 +3879,12 @@ if (visionAnalyzeBtn) {
                     } else {
                         const errData = await response.json();
                         lastErrorMsg = errData.error?.message || "Error desconocido";
-                        continue;
                     }
                 } catch (err) {
                     lastErrorMsg = err.message;
                 }
             }
+            } // Fin del bloque else para Gemini
 
             if (!successResponse) {
                 throw new Error(`Ningún modelo procesó la imagen. Último error: ${lastErrorMsg}`);
@@ -2399,15 +3894,65 @@ if (visionAnalyzeBtn) {
             
             if (data.candidates && data.candidates.length > 0) {
                 const resultText = data.candidates[0].content.parts[0].text;
-                visionResultText.innerText = resultText;
-                visionResultContainer.classList.remove('hidden');
                 
-                // Registrar cuota si está disponible
-                if (data.usageMetadata && typeof quotaManager !== 'undefined') {
-                    quotaManager.recordUsage(data.usageMetadata);
+                let reportText = "";
+                let parsedDetections = [];
+                
+                try {
+                    const cleanedJSON = cleanJSONString(resultText);
+                    const parsed = JSON.parse(cleanedJSON);
+                    reportText = parsed.reportMarkdown || "No se devolvió texto en el reporte.";
+                    parsedDetections = parsed.suspicions || [];
+                } catch (e) {
+                    console.error("Error al parsear JSON de la IA:", e);
+                    reportText = resultText;
+                    parsedDetections = [];
                 }
+
+                visionResultText.innerHTML = parseMarkdownToHTML(reportText);
+                visionResultContainer.classList.remove('hidden');
+
+                // Procesar detecciones mapeadas
+                annotations = parsedDetections.map((det, index) => {
+                    let type = 'caries';
+                    const labelLower = (det.label || '').toLowerCase();
+                    const descLower = (det.description || '').toLowerCase();
+                    const typeField = (det.type || '').toLowerCase();
+                    
+                    if (typeField === 'apical' || labelLower.includes('apical') || descLower.includes('apical') || labelLower.includes('infecc') || descLower.includes('infecc')) {
+                        type = 'apical';
+                    } else if (typeField === 'oseo' || labelLower.includes('oseo') || descLower.includes('oseo') || labelLower.includes('hueso') || descLower.includes('hueso') || labelLower.includes('periodon') || descLower.includes('periodon')) {
+                        type = 'oseo';
+                    }
+                    
+                    let box = det.box_2d || [0, 0, 0, 0];
+                    // Si los valores están en rango 0.0 - 1.0 (float) en vez de 0 - 1000, los reescalamos
+                    if (box.some(val => val > 0 && val <= 1.0)) {
+                        const maxVal = Math.max(...box);
+                        if (maxVal <= 1.0) {
+                            box = box.map(val => Math.round(val * 1000));
+                        }
+                    }
+                    
+                    return {
+                        id: Date.now() + index + Math.random(),
+                        type: type,
+                        box_2d: box,
+                        label: det.label || capitalizeFirstLetter(type),
+                        description: det.description || det.label || capitalizeFirstLetter(type)
+                    };
+                }).filter(ann => {
+                    const [ymin, xmin, ymax, xmax] = ann.box_2d;
+                    return (ymax > ymin && xmax > xmin && ymin >= 0 && xmin >= 0 && ymax <= 1000 && xmax <= 1000);
+                });
+
+                selectedAnnotationIndex = -1;
+                hoveredAnnotationIndex = -1;
+
+                updateAnnotationsList();
+                resizeCanvas();
             } else {
-                throw new Error("Gemini no devolvió ningún texto descriptivo.");
+                throw new Error("Gemini no devolvió ningún contenido.");
             }
 
         } catch (error) {
@@ -2437,8 +3982,67 @@ if (visionCopyBtn) {
     });
 }
 
-// === Aprendizaje Automático de Correcciones ===
+// === GESTIÓN DE INDICADOR DE SINCRONIZACIÓN ===
+function updateSyncIndicator(state) {
+    const indicator = document.getElementById('ai-sync-indicator');
+    if (!indicator) return;
+
+    // Resetear clases
+    indicator.className = 'ai-sync-indicator ' + state;
+
+    const iconSpan = indicator.querySelector('.indicator-icon');
+    const textSpan = indicator.querySelector('.indicator-text');
+
+    if (state === 'idle') {
+        iconSpan.innerHTML = '<i data-lucide="sparkles"></i>';
+        textSpan.textContent = 'Inteligencia al día';
+    } else if (state === 'learning') {
+        iconSpan.innerHTML = '<i data-lucide="refresh-cw"></i>';
+        textSpan.textContent = 'Sincronizando...';
+    } else if (state === 'success') {
+        iconSpan.innerHTML = '<i data-lucide="check-circle-2"></i>';
+        textSpan.textContent = '¡Corrección aprendida!';
+    }
+    
+    // Re-crear iconos de Lucide
+    if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+    }
+}
+
+// === COMPROBACIÓN ASÍNCRONA DE APRENDIZAJE ===
+async function triggerCorrectionCheck() {
+    // Si hay un temporizador activo, lo limpiamos
+    if (learnDebounceTimer) {
+        clearTimeout(learnDebounceTimer);
+        learnDebounceTimer = null;
+    }
+
+    const currentText = transcriptionArea ? transcriptionArea.value.trim() : '';
+    const cleanLastSystemText = lastSystemText.trim();
+    const apiKey = localStorage.getItem('gemini_api_key');
+
+    if (!apiKey) return;
+    if (!currentText || !cleanLastSystemText) {
+        lastSystemText = currentText;
+        return;
+    }
+
+    if (currentText !== cleanLastSystemText) {
+        // Marcamos como sincronizado para evitar ejecuciones repetidas
+        lastSystemText = currentText;
+        await learnCorrections(cleanLastSystemText, currentText, apiKey);
+    }
+}
+
+// === APRENDIZAJE AUTOMÁTICO DE CORRECCIONES ===
 async function learnCorrections(original, edited, apiKey) {
+    if (!original.trim() || !edited.trim() || original.trim() === edited.trim()) {
+        return;
+    }
+
+    updateSyncIndicator('learning');
+
     try {
         const prompt = `Compara el texto original con el texto editado por el usuario. 
 El usuario ha corregido errores de dictado o términos médicos/radiológicos.
@@ -2470,20 +4074,31 @@ Editado: "${edited}"`;
             for (const [wrong, right] of Object.entries(newCorrections)) {
                 const w = wrong.toLowerCase().trim();
                 const r = right.trim();
-                // Avoid empty, identical or already existing ones
+                // Evitamos duplicados, vacíos o que sean idénticas
                 if (w && r && w !== r.toLowerCase() && !correctionsDict[w]) {
                     correctionsDict[w] = r;
+                    correctionsMeta[w] = { auto: true, date: new Date().toLocaleDateString() };
                     addedCount++;
                 }
             }
 
             if (addedCount > 0) {
                 localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+                localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
                 if (typeof renderDict === 'function') renderDict();
                 console.log(`Aprendidas ${addedCount} nuevas correcciones.`);
+                updateSyncIndicator('success');
+                setTimeout(() => {
+                    updateSyncIndicator('idle');
+                }, 3000);
+            } else {
+                updateSyncIndicator('idle');
             }
+        } else {
+            updateSyncIndicator('idle');
         }
     } catch (e) {
         console.error("Error aprendiendo correcciones:", e);
+        updateSyncIndicator('idle');
     }
 }

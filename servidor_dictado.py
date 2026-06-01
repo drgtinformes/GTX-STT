@@ -6,7 +6,7 @@ import websockets
 import keyboard
 import json
 
-HTTP_PORT = 8080
+HTTP_PORT = 9080
 WS_PORT = 8081
 CLIENTS = set()
 

@@ -6,7 +6,7 @@
     <title>GTX Radiologia - STT</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css?v=1.2">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.min.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -28,6 +28,9 @@
                     <span class="icon"><i data-lucide="mic"></i></span>
                     <span id="record-text">Iniciar Dictado (F2)</span>
                 </button>
+                <button id="pause-btn" class="btn secondary-btn hidden" title="Pausar / Reanudar (F3)" style="padding: 10px; display: flex; align-items: center; justify-content: center; width: 42px;">
+                    <span class="icon"><i data-lucide="pause"></i></span>
+                </button>
                 <div class="engine-selector">
                     <select id="engine-select" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--glass-border); color: var(--text-primary); font-size: 0.9rem; padding: 10px 12px; border-radius: 8px; outline: none; cursor: pointer; height: 100%;">
                         <option value="native">🎙️ Motor: Navegador (Gratis)</option>
@@ -44,23 +47,27 @@
                 </button>
             </div>
 
-            <div id="token-stats" class="token-stats hidden">
+            <div id="realtime-cost-container" class="token-stats hidden">
                 <div class="token-item">
-                    <span class="token-label">Último uso:</span>
-                    <span id="last-token-usage" class="token-value">0</span>
+                    <span class="token-label">Última Sesión:</span>
+                    <span id="last-session-cost" class="token-value">$0.0000</span>
                 </div>
                 <div class="token-item">
-                    <span class="token-label">Total hoy:</span>
-                    <span id="daily-token-usage" class="token-value">0</span>
+                    <span class="token-label">Tiempo Transcurrido:</span>
+                    <span id="realtime-elapsed-time" class="token-value">00:00</span>
                 </div>
                 <div class="token-item">
-                    <span class="token-label">Restante est.:</span>
-                    <span id="remaining-quota" class="token-value">1,500</span>
+                    <span class="token-label">Total Hoy (Realtime):</span>
+                    <span id="daily-cost" class="token-value">$0.0000</span>
                 </div>
             </div>
 
-            <div class="textarea-container">
+            <div class="textarea-container" style="position: relative;">
                 <textarea id="transcription" placeholder="El texto dictado aparecerá aquí. Puedes editarlo manualmente en cualquier momento..."></textarea>
+                <div id="ai-sync-indicator" class="ai-sync-indicator idle">
+                    <span class="indicator-icon"><i data-lucide="sparkles"></i></span>
+                    <span class="indicator-text">Inteligencia al día</span>
+                </div>
             </div>
 
 
@@ -115,10 +122,24 @@
                         <input type="password" id="api-key-input" placeholder="AIzaSy...">
                         <p class="small-text"><a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: #a855f7;">Consigue tu Gemini API Key Gratis aquí</a>.</p>
                     </div>
-                    <div class="input-group">
+                    <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="anthropic-key-input">Anthropic API Key (Para Claude 4.7 Opus):</label>
+                        <input type="password" id="anthropic-key-input" placeholder="sk-ant-...">
+                        <p class="small-text"><a href="https://console.anthropic.com/" target="_blank" style="color: #a855f7;">Consigue tu Anthropic API Key aquí</a>.</p>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 15px;">
                         <label for="openai-key-input">OpenAI API Key (Para motor Whisper - Opcional):</label>
                         <input type="password" id="openai-key-input" placeholder="sk-proj-...">
                         <p class="small-text"><a href="https://platform.openai.com/api-keys" target="_blank" style="color: #10b981;">Consigue tu OpenAI API Key aquí</a>.</p>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="formatter-model-select">Modelo para Procesar con IA:</label>
+                        <select id="formatter-model-select" style="width: 100%; padding: 10px; background: rgba(15, 23, 42, 0.6); color: var(--text-primary); border: 1px solid var(--glass-border); border-radius: 8px; outline: none; cursor: pointer;">
+                            <option value="auto">🔍 Selección Automática (Gemini Flash)</option>
+                            <option value="gemini-2.0-flash">Gemini 2.0 Flash (Recomendado)</option>
+                            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Alta Precisión)</option>
+                            <option value="claude-4.7-opus">Claude 4.7 Opus (Anthropic)</option>
+                        </select>
                     </div>
                     <p class="small-text" style="margin-top: 15px;">Tus claves se guardan localmente en tu navegador de forma segura.</p>
                 </div>
@@ -285,12 +306,71 @@
                             <i data-lucide="clipboard-paste" style="width: 48px; height: 48px; color: var(--text-secondary); margin-bottom: 10px;"></i>
                             <p>Haz clic aquí y presiona <strong>Ctrl+V</strong> para pegar una imagen</p>
                         </div>
-                        <img id="vision-preview-img" class="hidden" src="" alt="Vista previa de recorte">
+                        <div id="vision-canvas-container" class="hidden" style="position: relative; display: inline-block; max-width: 100%;">
+                            <img id="vision-preview-img" src="" alt="Vista previa de recorte" style="display: block; max-width: 100%; max-height: 300px; object-fit: contain; pointer-events: none;">
+                            <canvas id="vision-canvas" style="position: absolute; top: 0; left: 0; cursor: crosshair; z-index: 20; width: 100%; height: 100%;"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Barra de herramientas de anotación -->
+                    <div id="vision-annotation-toolbar" class="hidden" style="margin-top: 10px; display: flex; gap: 10px; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.4); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--glass-border);">
+                        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                            <span style="font-size: 0.85rem; color: var(--text-secondary);">Herramienta:</span>
+                            <button type="button" class="tool-btn active" data-type="caries" onclick="selectAnnotationTool('caries')" style="background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #fca5a5; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px; outline: none;">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block;"></span> Caries
+                            </button>
+                            <button type="button" class="tool-btn" data-type="apical" onclick="selectAnnotationTool('apical')" style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); color: #fde047; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px; outline: none;">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block;"></span> Lesión Apical
+                            </button>
+                            <button type="button" class="tool-btn" data-type="oseo" onclick="selectAnnotationTool('oseo')" style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.4); color: #93c5fd; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px; outline: none;">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; display: inline-block;"></span> Soporte Óseo
+                            </button>
+                            
+                            <span style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 8px; border-left: 1px solid rgba(255,255,255,0.1); padding-left: 8px;">Modo:</span>
+                            <button type="button" id="draw-mode-box" class="tool-btn active" onclick="setDrawMode('box')" style="background: rgba(168, 85, 247, 0.2); border: 1px solid #a855f7; color: #e9d5ff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px; outline: none;">
+                                <i data-lucide="square" style="width: 12px; height: 12px;"></i> Rectángulo
+                            </button>
+                            <button type="button" id="draw-mode-lasso" class="tool-btn" onclick="setDrawMode('lasso')" style="background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px; outline: none;">
+                                <i data-lucide="pencil" style="width: 12px; height: 12px;"></i> Lazo (Lasso)
+                            </button>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" class="btn secondary-btn" onclick="exportAnnotatedImage()" style="padding: 4px 8px; font-size: 0.8rem; height: auto; display: flex; align-items: center; gap: 4px;">
+                                <i data-lucide="download" style="width: 12px; height: 12px;"></i> Guardar Imagen
+                            </button>
+                            <button type="button" class="btn danger-btn" onclick="clearAllAnnotations()" style="padding: 4px 8px; font-size: 0.8rem; height: auto; background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #fca5a5; display: flex; align-items: center; gap: 4px;">
+                                <i data-lucide="trash-2" style="width: 12px; height: 12px;"></i> Limpiar
+                            </button>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap;">
+                        <div class="input-group" style="flex: 1; min-width: 250px; margin-bottom: 0;">
+                            <label for="vision-model-select" style="display: flex; align-items: center; gap: 6px;">
+                                <i data-lucide="cpu" style="width: 14px; height: 14px; color: #a855f7;"></i> Modelo de IA
+                            </label>
+                            <select id="vision-model-select" style="width: 100%; padding: 8px 12px; background: rgba(15, 23, 42, 0.6); color: var(--text-primary); border: 1px solid var(--glass-border); border-radius: 8px; outline: none; cursor: pointer;">
+                                <option value="auto">🔍 Selección Automática (Mejor disponible)</option>
+                                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Recomendado)</option>
+                                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Alta Precisión)</option>
+                                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Más rápido)</option>
+                                <option value="claude-4.7-opus">Claude 4.7 Opus (Anthropic)</option>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="input-group" style="margin-top: 15px;">
-                        <label for="vision-prompt-input">¿Qué debo analizar en esta imagen?</label>
-                        <input type="text" id="vision-prompt-input" placeholder="Ej. Describe las características radiográficas de la lesión apical en el 4.6">
+                        <label style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                            <i data-lucide="sparkles" style="width: 14px; height: 14px; color: #a855f7;"></i> ¿Qué debo analizar en esta imagen?
+                        </label>
+                        <div class="preset-chips-container">
+                            <button type="button" class="preset-chip active" data-prompt="Describe detalladamente los hallazgos radiográficos de esta lesión/imagen en términos técnicos odontológicos/maxilofaciales." onclick="selectPresetChip(this)">🔍 General</button>
+                            <button type="button" class="preset-chip" data-prompt="Evalúa detenidamente la presencia de caries dentales. Indica qué piezas dentarias están comprometidas, qué caras (mesial, distal, oclusal, cervical) y la profundidad estimada (esmalte, dentina o si compromete la cámara pulpar)." onclick="selectPresetChip(this)">🦷 Detectar Caries</button>
+                            <button type="button" class="preset-chip" data-prompt="Analiza la zona periapical de las piezas dentarias visibles. Describe si hay presencia de lesiones radiolúcidas (lesión periapical, granuloma o quiste), si hay ensanchamiento del ligamento periodontal o pérdida de la lámina dura." onclick="selectPresetChip(this)">🩻 Lesión Apical / Infección</button>
+                            <button type="button" class="preset-chip" data-prompt="Evalúa la altura del reborde óseo alveolar y el soporte periodontal. Indica si hay reabsorción ósea horizontal o vertical (leve, moderada o severa) y si se aprecian tártaro/cálculo dental o pérdida ósea periimplantaria." onclick="selectPresetChip(this)">📉 Soporte Óseo / Periodoncia</button>
+                            <button type="button" class="preset-chip" data-prompt="Analiza el estado del tratamiento endodóntico (obturación de conductos). Evalúa si la obturación es completa, subobturada o sobreobturada, y si se observan signos de filtración, reabsorción radicular o lesiones asociadas." onclick="selectPresetChip(this)">⚡ Evaluar Endodoncia</button>
+                        </div>
+                        <input type="text" id="vision-prompt-input" placeholder="Ej. Describe las características radiográficas de la lesión apical en el 4.6" style="margin-top: 8px;">
                     </div>
 
                     <button id="vision-analyze-btn" class="btn primary-btn" style="width: 100%; margin-top: 15px; justify-content: center; background: linear-gradient(135deg, #8b5cf6, #6366f1); box-shadow: 0 4px 14px rgba(139, 92, 246, 0.3);">
@@ -302,7 +382,20 @@
                             <h3 style="font-size: 1rem; color: #a855f7;">Análisis:</h3>
                             <button id="vision-copy-btn" class="btn secondary-btn" style="padding: 5px 10px; font-size: 0.8rem;"><i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copiar Texto</button>
                         </div>
-                        <div id="vision-result-text" style="font-size: 0.95rem; white-space: pre-wrap; line-height: 1.5; color: var(--text-primary); max-height: 200px; overflow-y: auto;"></div>
+                        <div id="vision-result-text" style="font-size: 0.95rem; white-space: pre-wrap; line-height: 1.5; color: var(--text-primary); max-height: 200px; overflow-y: auto; margin-bottom: 15px;"></div>
+                        
+                        <!-- Línea separadora -->
+                        <div id="annotations-divider" class="hidden" style="border-top: 1px solid var(--glass-border); margin: 15px 0;"></div>
+
+                        <!-- Panel de Anotaciones Detalladas -->
+                        <div id="annotations-list-container" class="hidden">
+                            <h4 style="font-size: 0.85rem; color: #a855f7; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+                                <i data-lucide="list-todo" style="width: 14px; height: 14px;"></i> Hallazgos en Radiografía (Editables)
+                            </h4>
+                            <div id="annotations-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto; padding-right: 5px;">
+                                <!-- Se poblará dinámicamente -->
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -321,7 +414,7 @@
     <script src="templates.js"></script>
     <script src="prompt.js"></script>
     <script src="gmail-integration.js?v=1.2"></script>
-    <script src="main.js?v=2"></script>
+    <script src="main.js?v=4"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
