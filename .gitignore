@@ -11,3 +11,11 @@ secrets.js
 *.zip
 respaldo_antes_de_whisper.zip
 backup_antes_de_opus.zip
+
+# Informes fuente (datos de pacientes — NUNCA subir a GitHub)
+informes_fuente/
+
+# Datos de evaluación (contienen informes reales — NO subir). El script sí se versiona.
+eval/casos_prueba.jsonl
+eval/resultados.jsonl
+eval/__pycache__/

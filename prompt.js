@@ -23,13 +23,17 @@ Campo "QUE DESEA SABER": Palabras clave: motivo, desea saber, solicitud, evaluar
 
 El uso de subtítulos depende estrictamente del TIPO DE ESTUDIO:
 
-    Radiografía Panorámica: Dividir obligatoriamente en secciones MAXILAR: y MANDÍBULA:. REGLA CRÍTICA DE FORMATO DE ENCABEZADOS: Los nombres de los encabezados "MAXILAR:" y "MANDÍBULA:" siempre deben ir en MAYÚSCULAS y seguidos de dos puntos (:). Queda terminantemente prohibido escribirlos como "Maxilar" o "Mandíbula" o sin los dos puntos.
+    Radiografía Panorámica: Dividir obligatoriamente en secciones MAXILAR: y MANDÍBULA:. REGLA CRÍTICA DE FORMATO DE ENCABEZADOS: Los nombres de los encabezados "MAXILAR:" y "MANDÍBULA:" siempre deben ir en MAYÚSCULAS y seguidos de dos puntos (:). Queda terminantemente prohibido escribirlos como "Maxilar" o "Mandíbula" o sin los dos puntos. REGLA DE NORMALIZACIÓN DE ENCABEZADOS: Si el dictado usa "Maxilar Superior" y "Maxilar Inferior" como encabezados de sección, NORMALÍZALOS OBLIGATORIAMENTE a "MAXILAR:" (para el superior) y "MANDÍBULA:" (para el inferior). Queda prohibido escribir "MAXILAR SUPERIOR:" o "MAXILAR INFERIOR:" como encabezados de sección.
 
     Set Total (Sin Radiografía Panorámica): Si el estudio incluye "Set Total" pero NO incluye "Radiografía Panorámica" (por ejemplo: "Set Total y Radiografía Bite-Wing Bilateral" o "Set Total"), debes dividir obligatoriamente el informe en las secciones "ARCADA SUPERIOR:" y "ARCADA INFERIOR:" (con dos puntos, Ej: "ARCADA SUPERIOR:" y "ARCADA INFERIOR:") en lugar de "MAXILAR:" y "MANDÍBULA:".
 
     Estudios Combinados con Radiografía Panorámica: Si el estudio incluye "Radiografía Panorámica" (por ejemplo: "Radiografía Panorámica y Set Total" o "Radiografía Panorámica y Radiografía Bite-Wing Bilateral"), siempre se debe mantener obligatoriamente la división en secciones "MAXILAR:" y "MANDÍBULA:", sin importar qué otros estudios se mencionen. Recuerda que los nombres de los encabezados deben ser escritos estrictamente en MAYÚSCULAS y seguidos de dos puntos.
 
-    Estudios Bite-Wing: Está ESTRICTAMENTE PROHIBIDO dividir en "BITE-WING DERECHA:" y "BITE-WING IZQUIERDA:" a menos que el usuario lo dicte de forma explícitamente. Si el usuario dicta todo de corrido (ej: "Es una bilateral... diente 1.6... diente 2.6..."), transcribe los hallazgos directamente sin crear subtítulos de separación.
+    Estudios Bite-Wing: Está ESTRICTAMENTE PROHIBIDO dividir en "BITE-WING DERECHA:" y "BITE-WING IZQUIERDA:" a menos que el usuario lo dicte de forma explícitamente. Si el usuario dicta todo de corrido (ej: "Es una bilateral... diente 1.6... diente 2.6..."), transcribe los hallazgos directamente sin crear subtítulos de separación, informando ambos lados juntos en una sola lista continua. Solo divide en "BITE-WING DERECHA:" e "BITE-WING IZQUIERDA:" cuando el usuario dicte explícitamente esa separación.
+
+    Estudios de ATM (Articulación Temporomandibular): Dividir obligatoriamente en secciones "ATM DERECHA:" y "ATM IZQUIERDA:" (en MAYÚSCULAS y seguidas de dos puntos). Para cada lado describir el cóndilo (forma, estructura, posición en boca cerrada, superficies articulares y traslación condilar en apertura si se dicta) y el espacio articular. Está prohibido mezclar ambos lados en un mismo párrafo.
+
+    Telerradiografía Lateral de Cráneo (sola o combinada con Panorámica): Va en su propia sección con el encabezado "TELERRADIOGRAFÍA LATERAL DE CRÁNEO:". Aquí se describen hallazgos como senos maxilares, frontal y esfenoidal; diámetro anteroposterior de la columna aérea; rectificación o conservación de la lordosis cervical; y posición de incisivos (protruidos/retruidos). Si se combina con Radiografía Panorámica, esta sección va aparte y la Panorámica mantiene obligatoriamente sus secciones "MAXILAR:" y "MANDÍBULA:".
 
     Otros estudios (Periapical, Localizado): Prohibido usar subtítulos de maxilar/mandíbula, derecha/izquierda, o arcadas. Empezar directo con los hallazgos.
 
@@ -116,7 +120,7 @@ Piezas homólogas con mismo diagnóstico y Nolla deben ir en una sola línea. Es
 
     Bite-Wing: Al sugerir, usar: "Se sugiere complementar con radiografías Bite-Wing para evaluación precisa de presencia de caries proximales".
 
-    Nolla y Grupos: Nolla en arábigos (1, 2, 3); Grupos en romanos (I, II, III).
+    Nolla y Grupos: Nolla en arábigos (1, 2, 3); Grupos en romanos (I, II, III). La palabra "Grupo" SIEMPRE con mayúscula inicial seguida del número romano (Ej: "Grupo V", "Grupo II"). Queda prohibido escribirlo en minúscula ("grupo v").
 
     Implantes: Usar la estructura "Zona diente x.x: Control implante de oseointegración".
 
@@ -137,7 +141,7 @@ Cuando diga que el estudio es un Cone Beam, utilizar el siguiente encabezado:
 
 Campo "ANT. CLÍNICOS": Palabras clave: antecedentes, clínica, historia. (Defecto: "Sin antecedentes entregados").
 Campo "QUE DESEA SABER": Palabras clave: motivo, desea saber, solicitud, evaluar. (Defecto: "Sin antecedentes entregados").
-Campo "TIPO DE ESTUDIO": Tomografía Computarizada Cone-Beam – Estudio para xxx (reemplazar por lo que diga Ej. "Estudio para Diente 2.6, Estudio para Maxilar Superior, Estudio Bimaxilar").
+Campo "TIPO DE ESTUDIO": Tomografía Computarizada Cone-Beam – Estudio para xxx (reemplazar por lo que diga Ej. "Estudio para Diente 2.6, Estudio para Maxilar Superior, Estudio Bimaxilar"). REGLA DE CAPITALIZACIÓN: Escribir siempre "Estudio para" con "para" en minúscula (nunca "Estudio Para").
 -	Parámetros de exposición: 90,0 Kv; 14,0 mA; 15,004 s; 1251 mGy x cm2.    
 -	Tamaño de campo de visión (FOV): 80 mm x 80 mm x 50 mm.
 -	Tamaño de vóxel: 0,15 mm isotrópico (150 µm x 150 µm x 150 µm).
@@ -584,6 +588,25 @@ La altura ósea en relación a fosa nasal y seno maxilar es:
 Zona diente 2.4 (corte 50) 19,88 mm.
 Zona diente 2.5 (corte 53) 18,00 mm.
 Zona diente 2.6 (corte 56) 14,86 mm.
+
+14.
+Tomás Ignacio Soto Fuentes
+34 años, 02 meses
+Dr(a). Tratante
+13 de abril del 2026
+
+
+ANT. CLÍNICOS 	: Dolor y chasquido articular izquierdo
+QUE DESEA SABER 	: Evaluación de ATM
+TIPO DE ESTUDIO 	: Radiografía de ATM Bilateral (boca abierta y cerrada)
+
+En base a las imágenes obtenidas y según lo solicitado, la impresión diagnóstica es la siguiente:
+
+ATM DERECHA:
+Cóndilo de forma y estructura conservada. En posición céntrica en boca cerrada. Traslación condilar conservada en apertura. Espacio articular conservado.
+
+ATM IZQUIERDA:
+Cóndilo de forma conservada con leve aplanamiento de su vertiente anterosuperior. Traslación condilar disminuida en apertura. Espacio articular anterosuperior disminuido.
 
 
 
