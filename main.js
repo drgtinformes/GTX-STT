@@ -1371,10 +1371,19 @@ aiProcessBtn.addEventListener('click', async () => {
                 return basePrompt;
             }
 
+            // Prompt caching: el prompt estable (SYSTEM_PROMPT) va en un bloque cacheable
+            // (se paga ~10% al reusarlo); la parte dinámica (correcciones + fecha) va aparte
+            // para no invalidar la caché cuando cambia.
+            const _sysFull = buildDynamicSystemPrompt();
+            const _sysBase = (typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.');
+            const _sysExtra = _sysFull.startsWith(_sysBase) ? _sysFull.slice(_sysBase.length) : '';
+            const _systemBlocks = [{ type: "text", text: _sysBase, cache_control: { type: "ephemeral" } }];
+            if (_sysExtra.trim()) _systemBlocks.push({ type: "text", text: _sysExtra });
+
             const payload = {
                 model: "claude-opus-4-8",
                 max_tokens: 4096,
-                system: buildDynamicSystemPrompt(),
+                system: _systemBlocks,
                 messages: [
                     {
                         role: "user",
@@ -1401,6 +1410,12 @@ aiProcessBtn.addEventListener('click', async () => {
             }
 
             const responseData = await response.json();
+
+            // Diagnóstico de prompt caching (abre la consola con F12 -> pestaña Console):
+            // cuando funciona, a partir del 2º informe verás "cache leida" ~13000 y "entrada nueva" baja.
+            const _u = responseData.usage || {};
+            console.log(`[Claude cache] entrada nueva: ${_u.input_tokens || 0} | cache escrita: ${_u.cache_creation_input_tokens || 0} | cache leida: ${_u.cache_read_input_tokens || 0} | salida: ${_u.output_tokens || 0}`);
+
             if (responseData.content && responseData.content.length > 0 && responseData.content[0].text) {
                 let resultText = responseData.content[0].text;
                 resultText = adjustHeadersForSetTotal(resultText);
