@@ -1074,6 +1074,16 @@ if (savedOpenAIKey && openaiKeyInput) openaiKeyInput.value = savedOpenAIKey;
 if (savedAnthropicKey && anthropicKeyInput) anthropicKeyInput.value = savedAnthropicKey;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
+// Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
+function actualizarBotonIA() {
+    if (!aiProcessBtn) return;
+    const fm = localStorage.getItem('formatter_model') || 'auto';
+    const nombre = fm.startsWith('claude') ? 'Claude Opus 4.8' : 'Gemini';
+    aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
+    if (window.lucide && lucide.createIcons) lucide.createIcons();
+}
+actualizarBotonIA();
+
 configBtn.addEventListener('click', () => {
     configModal.classList.remove('hidden');
 });
@@ -1092,6 +1102,7 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('openai_api_key', openaiKey);
     localStorage.setItem('anthropic_api_key', anthropicKey);
     localStorage.setItem('formatter_model', formatterModel);
+    actualizarBotonIA();
     
     alert('Configuración guardada exitosamente.');
     configModal.classList.add('hidden');
