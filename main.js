@@ -1067,6 +1067,8 @@ const formatterModelSelect = document.getElementById('formatter-model-select');
 const savedApiKey = localStorage.getItem('gemini_api_key');
 const savedOpenAIKey = localStorage.getItem('openai_api_key');
 const savedAnthropicKey = localStorage.getItem('anthropic_api_key');
+// Migración: el valor del selector pasó de 'claude-4.7-opus' a 'claude-opus-4-8' (mismo destino, nombre claro)
+if (localStorage.getItem('formatter_model') === 'claude-4.7-opus') localStorage.setItem('formatter_model', 'claude-opus-4-8');
 const savedFormatterModel = localStorage.getItem('formatter_model') || 'auto';
 
 if (savedApiKey && apiKeyInput) apiKeyInput.value = savedApiKey;
@@ -1083,6 +1085,7 @@ function actualizarBotonIA() {
     if (window.lucide && lucide.createIcons) lucide.createIcons();
 }
 actualizarBotonIA();
+actualizarContadorUI();
 
 configBtn.addEventListener('click', () => {
     configModal.classList.remove('hidden');
@@ -1346,7 +1349,7 @@ aiProcessBtn.addEventListener('click', async () => {
         return;
     }
 
-    if (formatterModel === 'claude-4.7-opus') {
+    if (formatterModel === 'claude-opus-4-8') {
         const anthropicKey = localStorage.getItem('anthropic_api_key');
         if (!anthropicKey) {
             alert('Debes configurar tu API Key de Anthropic primero haciendo clic en el icono de configuración (engranaje).');
@@ -1437,6 +1440,7 @@ aiProcessBtn.addEventListener('click', async () => {
 
                 // Red de seguridad: avisar si la IA omitió algún diente del dictado
                 avisarDientesOmitidos(textToProcess, resultText);
+                incrementarContadorInformes();
             } else {
                 throw new Error("No se pudo obtener respuesta de Claude.");
             }
@@ -1605,6 +1609,7 @@ aiProcessBtn.addEventListener('click', async () => {
             
             // Red de seguridad: avisar si la IA omitió algún diente del dictado
             avisarDientesOmitidos(textToProcess, resultText);
+            incrementarContadorInformes();
 
         } else {
             throw new Error("No se pudo obtener respuesta de la IA.");
@@ -1638,6 +1643,36 @@ function avisarDientesOmitidos(dictado, informe) {
     } catch (e) {
         console.warn("No se pudo verificar omisión de dientes:", e);
     }
+}
+
+// ===== Contador de informes procesados (diario y mensual, guardado en localStorage) =====
+function _fechaClavesContador() {
+    const d = new Date();
+    const dia = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return { dia, mes: dia.slice(0, 7) };
+}
+function _leerContadorInformes() {
+    let c;
+    try { c = JSON.parse(localStorage.getItem('contador_informes') || '{}'); } catch (e) { c = {}; }
+    const { dia, mes } = _fechaClavesContador();
+    if (c.dia !== dia) { c.dia = dia; c.nDia = 0; }   // cambió el día -> reinicia el conteo diario
+    if (c.mes !== mes) { c.mes = mes; c.nMes = 0; }   // cambió el mes -> reinicia el conteo mensual
+    return c;
+}
+function actualizarContadorUI() {
+    const c = _leerContadorInformes();
+    localStorage.setItem('contador_informes', JSON.stringify(c));
+    const ed = document.getElementById('cont-dia');
+    const em = document.getElementById('cont-mes');
+    if (ed) ed.textContent = c.nDia || 0;
+    if (em) em.textContent = c.nMes || 0;
+}
+function incrementarContadorInformes() {
+    const c = _leerContadorInformes();
+    c.nDia = (c.nDia || 0) + 1;
+    c.nMes = (c.nMes || 0) + 1;
+    localStorage.setItem('contador_informes', JSON.stringify(c));
+    actualizarContadorUI();
 }
 
 // Función para decodificar base64 a ArrayBuffer
@@ -3554,7 +3589,7 @@ async function loadVisionModels() {
             // Limpiar excepto auto y Claude 4.7 Opus
             visionModelSelect.innerHTML = `
                 <option value="auto">🔍 Selección Automática (Mejor disponible)</option>
-                <option value="claude-4.7-opus">Claude Opus 4.8 (Anthropic)</option>
+                <option value="claude-opus-4-8">Claude Opus 4.8 (Anthropic)</option>
             `;
             
             // Priorización: 1) Pro, 2) Flash 2.x, 3) Flash 1.5
@@ -3753,7 +3788,7 @@ if (visionAnalyzeBtn) {
         const selectedModelValue = visionModelSelect ? visionModelSelect.value : 'auto';
         let apiKey = null;
 
-        if (selectedModelValue === 'claude-4.7-opus') {
+        if (selectedModelValue === 'claude-opus-4-8') {
             const anthropicKey = localStorage.getItem('anthropic_api_key');
             if (!anthropicKey) {
                 alert('Debes configurar tu API Key de Anthropic primero en la configuración.');
@@ -3783,7 +3818,7 @@ if (visionAnalyzeBtn) {
             let successResponse = null;
             let lastErrorMsg = "";
 
-            if (selectedModelValue === 'claude-4.7-opus') {
+            if (selectedModelValue === 'claude-opus-4-8') {
                 const anthropicKey = localStorage.getItem('anthropic_api_key');
                 const payload = {
                     model: "claude-opus-4-8",
