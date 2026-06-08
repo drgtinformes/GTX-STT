@@ -19,3 +19,7 @@ informes_fuente/
 eval/casos_prueba.jsonl
 eval/resultados.jsonl
 eval/__pycache__/
+
+# Salidas del comparador de modelos (derivadas de informes reales — NO subir). El script sí se versiona.
+eval/resultados_*.jsonl
+eval/comparacion_modelos*

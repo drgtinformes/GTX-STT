@@ -1361,11 +1361,18 @@ aiProcessBtn.addEventListener('click', async () => {
                     }
                     basePrompt += customRules;
                 }
+
+                // Inyectar la fecha real del sistema para que el modelo NO la invente
+                const _hoy = new Date();
+                const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+                const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+                basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
                 return basePrompt;
             }
 
             const payload = {
-                model: "claude-opus-4-7",
+                model: "claude-opus-4-8",
                 max_tokens: 4096,
                 system: buildDynamicSystemPrompt(),
                 messages: [
@@ -1437,18 +1444,22 @@ aiProcessBtn.addEventListener('click', async () => {
             if (listRes.ok) {
                 const listData = await listRes.json();
                 let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
-                availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
+                // Excluir modelos que NO son de texto o están descontinuados (evita caer en p.ej. gemini-robotics-er-1.5-preview)
+                const MODELOS_EXCLUIDOS = ['computer-use','robotics','embedding','aqa','imagen','veo','tts','vision','thinking','learnlm','gemma'];
+                availableModels = availableModels.filter(m => !MODELOS_EXCLUIDOS.some(x => m.name.toLowerCase().includes(x)));
 
                 const priorityOrder = [];
                 if (formatterModel !== 'auto' && formatterModel.startsWith('gemini-')) {
                     priorityOrder.push(formatterModel);
                 }
                 const defaultPriority = [
+                    'gemini-2.5-flash',
                     'gemini-2.0-flash',
+                    'gemini-flash-latest',
+                    'gemini-2.5-flash-lite',
                     'gemini-1.5-flash-latest',
                     'gemini-1.5-flash',
-                    'gemini-1.5-flash-8b',
-                    'gemini-1.5-pro-latest',
+                    'gemini-2.5-pro',
                     'gemini-1.5-pro'
                 ];
                 defaultPriority.forEach(pName => {
@@ -1474,7 +1485,7 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         if (validModels.length === 0) {
-            const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+            const fallbackModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
             fallbackModels.forEach(mName => {
                 validModels.push({ name: `models/${mName}` });
             });
@@ -1494,6 +1505,13 @@ aiProcessBtn.addEventListener('click', async () => {
                 }
                 basePrompt += customRules;
             }
+
+            // Inyectar la fecha real del sistema para que el modelo NO la invente
+            const _hoy = new Date();
+            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+            basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
             return basePrompt;
         }
 
@@ -1832,6 +1850,11 @@ async function prepareDocument() {
         const now = new Date();
         const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
         dictValues.FECHA = `${now.getDate()} de ${months[now.getMonth()]} del ${now.getFullYear()}`;
+    }
+
+    // Fallback: Si no se detectó doctor en el dictado, usar "Dr(a). Tratante" (nunca inventar un nombre)
+    if (!dictValues.DOCTOR) {
+        dictValues.DOCTOR = "Dr(a). Tratante";
     }
 
     // Extraer bloques de texto (ahora multilínea para capturar parámetros de exposición, etc.)
@@ -3467,7 +3490,8 @@ async function loadVisionModels() {
         const listData = await listRes.json();
         
         let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
-        availableModels = availableModels.filter(m => !m.name.toLowerCase().includes('computer-use'));
+        const MODELOS_EXCLUIDOS = ['computer-use','robotics','embedding','aqa','imagen','veo','tts','vision','thinking','learnlm','gemma'];
+        availableModels = availableModels.filter(m => !MODELOS_EXCLUIDOS.some(x => m.name.toLowerCase().includes(x)));
 
         const isModernModel = (name) => {
             const n = name.toLowerCase();
@@ -3479,7 +3503,7 @@ async function loadVisionModels() {
             // Limpiar excepto auto y Claude 4.7 Opus
             visionModelSelect.innerHTML = `
                 <option value="auto">🔍 Selección Automática (Mejor disponible)</option>
-                <option value="claude-4.7-opus">Claude 4.7 Opus (Anthropic)</option>
+                <option value="claude-4.7-opus">Claude Opus 4.8 (Anthropic)</option>
             `;
             
             // Priorización: 1) Pro, 2) Flash 2.x, 3) Flash 1.5
@@ -3711,7 +3735,7 @@ if (visionAnalyzeBtn) {
             if (selectedModelValue === 'claude-4.7-opus') {
                 const anthropicKey = localStorage.getItem('anthropic_api_key');
                 const payload = {
-                    model: "claude-opus-4-7",
+                    model: "claude-opus-4-8",
                     max_tokens: 4096,
                     system: RADIOLOGY_SYSTEM_PROMPT,
                     messages: [
