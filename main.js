@@ -1408,6 +1408,9 @@ aiProcessBtn.addEventListener('click', async () => {
                 finalTranscript = resultText;
                 lastSystemText = resultText;
                 saveToHistory(resultText);
+
+                // Red de seguridad: avisar si la IA omitió algún diente del dictado
+                avisarDientesOmitidos(textToProcess, resultText);
             } else {
                 throw new Error("No se pudo obtener respuesta de Claude.");
             }
@@ -1574,6 +1577,9 @@ aiProcessBtn.addEventListener('click', async () => {
             // Guardar en el historial
             saveToHistory(resultText);
             
+            // Red de seguridad: avisar si la IA omitió algún diente del dictado
+            avisarDientesOmitidos(textToProcess, resultText);
+
         } else {
             throw new Error("No se pudo obtener respuesta de la IA.");
         }
@@ -1588,6 +1594,25 @@ aiProcessBtn.addEventListener('click', async () => {
 });
 
 // === Lógica de Generación de Archivo Word (.docx) ===
+
+// Red de seguridad determinista: detecta dientes (formato FDI X.X) presentes en el
+// dictado que la IA omitió en el informe, y avisa al usuario para que los revise.
+function avisarDientesOmitidos(dictado, informe) {
+    try {
+        const re = /\b[1-4]\.[1-8]\b/g;
+        const enDictado = new Set((dictado || '').match(re) || []);
+        const enInforme = new Set((informe || '').match(re) || []);
+        const faltantes = [...enDictado].filter(d => !enInforme.has(d)).sort();
+        if (faltantes.length > 0) {
+            alert("⚠️ POSIBLE OMISIÓN DE DIENTES\n\n" +
+                  "Estos dientes estaban en el dictado pero NO aparecen en el informe generado:\n\n" +
+                  faltantes.join(",  ") +
+                  "\n\nRevisa el informe o vuelve a procesar.");
+        }
+    } catch (e) {
+        console.warn("No se pudo verificar omisión de dientes:", e);
+    }
+}
 
 // Función para decodificar base64 a ArrayBuffer
 function base64ToArrayBuffer(base64) {
