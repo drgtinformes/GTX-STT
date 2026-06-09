@@ -1486,14 +1486,14 @@ aiProcessBtn.addEventListener('click', async () => {
                     priorityOrder.push(formatterModel);
                 }
                 const defaultPriority = [
+                    'gemini-3.5-flash',
+                    'gemini-3-flash',
+                    'gemini-flash-latest',
                     'gemini-2.5-flash',
                     'gemini-2.0-flash',
-                    'gemini-flash-latest',
                     'gemini-2.5-flash-lite',
                     'gemini-1.5-flash-latest',
-                    'gemini-1.5-flash',
-                    'gemini-2.5-pro',
-                    'gemini-1.5-pro'
+                    'gemini-1.5-flash'
                 ];
                 defaultPriority.forEach(pName => {
                     if (!priorityOrder.includes(pName)) {
@@ -1507,7 +1507,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 });
 
                 availableModels.forEach(m => {
-                    const isModern = m.name.includes('1.5') || m.name.includes('2.0') || m.name.includes('2.5');
+                    const isModern = m.name.includes('gemini-3') || m.name.includes('2.5') || m.name.includes('2.0') || m.name.includes('1.5');
                     if (isModern && !validModels.find(vm => vm.name === m.name)) {
                         validModels.push(m);
                     }
@@ -1518,7 +1518,7 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         if (validModels.length === 0) {
-            const fallbackModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+            const fallbackModels = ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-2.5-flash'];
             fallbackModels.forEach(mName => {
                 validModels.push({ name: `models/${mName}` });
             });
@@ -3595,7 +3595,8 @@ async function loadVisionModels() {
             // Priorización: 1) Pro, 2) Flash 2.x, 3) Flash 1.5
             const getPriority = (name) => {
                 const n = name.toLowerCase();
-                if (n.includes('2.5-pro') || n.includes('2.0-pro') || n.includes('1.5-pro')) return 3;
+                if (n.includes('gemini-3')) return 4;
+                if (n.includes('2.5-pro') || n.includes('1.5-pro')) return 3;
                 if (n.includes('2.5-flash') || n.includes('2.0-flash')) return 2;
                 if (n.includes('1.5-flash')) return 1;
                 return 0;
@@ -3938,7 +3939,7 @@ if (visionAnalyzeBtn) {
                 if (selectedModelValue !== 'auto') {
                     validModels.push({ name: `models/${selectedModelValue}` });
                 } else {
-                    const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'];
+                    const fallbackModels = ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-2.5-flash'];
                     fallbackModels.forEach(mName => {
                         validModels.push({ name: `models/${mName}` });
                     });
