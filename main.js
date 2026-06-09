@@ -1391,7 +1391,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _sysFull = buildDynamicSystemPrompt();
             const _sysBase = (typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.');
             const _sysExtra = _sysFull.startsWith(_sysBase) ? _sysFull.slice(_sysBase.length) : '';
-            const _systemBlocks = [{ type: "text", text: _sysBase, cache_control: { type: "ephemeral" } }];
+            const _systemBlocks = [{ type: "text", text: _sysBase, cache_control: { type: "ephemeral", ttl: "1h" } }];
             if (_sysExtra.trim()) _systemBlocks.push({ type: "text", text: _sysExtra });
 
             const payload = {
