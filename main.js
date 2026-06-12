@@ -48,6 +48,8 @@ const defaultCorrectionsDict = {
     "granuloma periapical": "granuloma periapical",
     "absceso periapical": "absceso periapical",
     "bolsa periodontal": "bolsa periodontal",
+    "apicalmente engrosado": "apical levemente engrosado",
+    "apical mente engrosado": "apical levemente engrosado",
     "pérdida ósea marginal": "pérdida ósea marginal",
     
     // === IMPLANTES ===
@@ -1433,6 +1435,7 @@ aiProcessBtn.addEventListener('click', async () => {
             if (responseData.content && responseData.content.length > 0 && responseData.content[0].text) {
                 let resultText = responseData.content[0].text;
                 resultText = adjustHeadersForSetTotal(resultText);
+                resultText = ensureCBCTParams(resultText, textToProcess);
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -1600,6 +1603,7 @@ aiProcessBtn.addEventListener('click', async () => {
         if (successResponse.candidates && successResponse.candidates.length > 0) {
             let resultText = successResponse.candidates[0].content.parts[0].text;
             resultText = adjustHeadersForSetTotal(resultText);
+            resultText = ensureCBCTParams(resultText, textToProcess);
             transcriptionArea.value = resultText;
             finalTranscript = resultText;
             lastSystemText = resultText;
@@ -1846,6 +1850,55 @@ function adjustHeadersForSetTotal(text) {
         }
     }
     return text;
+}
+
+// === Red de seguridad CBCT: bloque de parámetros técnicos ===
+// El modelo (Gemini/Claude) a veces omite el bloque de parámetros del Cone-Beam
+// porque choca con las reglas de "cero alucinación / no copiar los ejemplos" del
+// prompt. Como ese bloque es texto fijo del equipo, lo insertamos por código para
+// garantizar que SIEMPRE aparezca. Solo se inyecta si el estudio es Cone-Beam y el
+// modelo NO lo incluyó (si el modelo ya lo puso, se respeta tal cual).
+//
+// Si cambian los valores del equipo (FOV, vóxel, etc.), edítalos aquí:
+const CBCT_PARAM_LINES = [
+    "-\tParámetros de exposición: 90,0 Kv; 14,0 mA; 15,004 s; 1251 mGy x cm2.",
+    "-\tTamaño de campo de visión (FOV): 80 mm x 80 mm x 50 mm.",
+    "-\tTamaño de vóxel: 0,15 mm isotrópico (150 µm x 150 µm x 150 µm).",
+    "-\tSe reconstruye la adquisición volumétrica mediante software Planmeca Romexis ®.",
+    "-\tPanorex y cortes paraxiales",
+    "-\tCortes paraxiales: espesor 1,0 mm; distanciamiento {D} mm."
+];
+// Distanciamiento por defecto si el dictado no menciona intervalo/distanciamiento:
+const CBCT_DIST_DEFAULT = "1,0";
+
+function ensureCBCTParams(text, dictado = "") {
+    if (!text) return text;
+
+    // 1. ¿El estudio es Cone-Beam? (se busca en la línea TIPO DE ESTUDIO)
+    const estudioMatch = text.match(/TIPO\s+DE\s+ESTUDIO\s*:\s*([^\n\r]+)/i);
+    if (!estudioMatch) return text;
+    if (!/cone[\s-]*beam|cbct/i.test(estudioMatch[1])) return text;
+
+    // 2. ¿El bloque de parámetros ya está presente? Si el modelo lo incluyó, no se toca.
+    if (/(par[aá]metros de exposici[oó]n|campo de visi[oó]n|v[oó]xel|romexis)/i.test(text)) {
+        return text;
+    }
+
+    // 3. Distanciamiento: usar el dictado (palabras clave "distanciamiento"/"intervalo")
+    //    o el valor por defecto si no se menciona.
+    let dist = CBCT_DIST_DEFAULT;
+    const distMatch = (dictado + "\n" + text).match(/(?:distanciamiento|intervalo)\s*(?:de\s*)?(\d+(?:[.,]\d+)?)\s*mm/i);
+    if (distMatch) dist = distMatch[1].replace(".", ",");
+
+    const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
+
+    // 4. Insertar el bloque justo después de la línea "TIPO DE ESTUDIO".
+    const lines = text.split("\n");
+    const idx = lines.findIndex(l => /^\s*TIPO\s+DE\s+ESTUDIO/i.test(l));
+    if (idx === -1) return text;
+    lines.splice(idx + 1, 0, bloque);
+    console.info("[CBCT] Bloque de parámetros técnicos insertado automáticamente (el modelo lo había omitido). Verifica FOV/distanciamiento si el estudio no fue estándar.");
+    return lines.join("\n");
 }
 
 // Función común para preparar el documento procesado
