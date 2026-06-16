@@ -1342,7 +1342,7 @@ closeHistoryBtn.addEventListener('click', () => {
 
 // === Lógica de Procesamiento con IA (Google Gemini) ===
 aiProcessBtn.addEventListener('click', async () => {
-    await triggerCorrectionCheck(); // Aprender correcciones acumuladas de forma consolidada antes del envío a Gemini
+    triggerCorrectionCheck(); // No bloqueante: el aprendizaje corre en 2º plano (ya se dispara en input/blur). El await previo retrasaba CADA procesado.
     const textToProcess = transcriptionArea.value.trim();
     const formatterModel = localStorage.getItem('formatter_model') || 'auto';
 
@@ -1476,9 +1476,20 @@ aiProcessBtn.addEventListener('click', async () => {
         // 1. Obtener la lista de modelos disponibles para esta API Key
         let validModels = [];
         try {
-            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-            if (listRes.ok) {
-                const listData = await listRes.json();
+            // Lista de modelos cacheada 24h en localStorage (antes se pedía a Google en CADA clic)
+            let listData = null;
+            try {
+                const _c = JSON.parse(localStorage.getItem('gemini_models_cache') || 'null');
+                if (_c && _c.ts && (Date.now() - _c.ts) < 86400000 && _c.data) listData = _c.data;
+            } catch (e) {}
+            if (!listData) {
+                const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                if (listRes.ok) {
+                    listData = await listRes.json();
+                    try { localStorage.setItem('gemini_models_cache', JSON.stringify({ ts: Date.now(), data: listData })); } catch (e) {}
+                }
+            }
+            if (listData && listData.models) {
                 let availableModels = listData.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
                 // Excluir modelos que NO son de texto o están descontinuados (evita caer en p.ej. gemini-robotics-er-1.5-preview)
                 const MODELOS_EXCLUIDOS = ['computer-use','robotics','embedding','aqa','imagen','veo','tts','vision','thinking','learnlm','gemma'];
@@ -1567,18 +1578,22 @@ aiProcessBtn.addEventListener('click', async () => {
         let successResponse = null;
         let lastErrorMsg = "";
 
-        // 3. Probar los modelos uno por uno hasta encontrar el que tiene cuota gratuita disponible
-        for (const model of validModels) {
+        // 3. Probar como máximo 3 modelos (antes recorría TODA la lista) con timeout por intento
+        for (const model of validModels.slice(0, 3)) {
             const modelName = model.name.replace('models/', '');
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-            
+
+            const _ctrl = new AbortController();
+            const _to = setTimeout(() => _ctrl.abort(), 30000); // corta intentos colgados a los 30s
             try {
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: _ctrl.signal
                 });
-                
+                clearTimeout(_to);
+
                 if (response.ok) {
                     successResponse = await response.json();
                     break; // ¡Funcionó! Salimos del bucle.
@@ -1589,7 +1604,8 @@ aiProcessBtn.addEventListener('click', async () => {
                     continue;
                 }
             } catch (err) {
-                lastErrorMsg = err.message;
+                clearTimeout(_to);
+                lastErrorMsg = err.name === 'AbortError' ? 'Tiempo de espera agotado (30s)' : err.message;
             }
         }
 
@@ -4175,6 +4191,24 @@ function updateSyncIndicator(state) {
 }
 
 // === COMPROBACIÓN ASÍNCRONA DE APRENDIZAJE ===
+// ¿'editado' parece una EDICIÓN de 'original' (mismo informe con cambios menores),
+// o es un texto totalmente nuevo (un dictado nuevo)? Evita aprender de textos no relacionados
+// y evita llamadas inútiles a Gemini que ralentizaban el procesado.
+function _pareceEdicion(original, editado) {
+    if (!original || !editado) return false;
+    const a = original.trim(), b = editado.trim();
+    if (!a || !b) return false;
+    const lenRatio = Math.min(a.length, b.length) / Math.max(a.length, b.length);
+    if (lenRatio < 0.5) return false; // longitudes muy distintas -> es un dictado nuevo
+    const setA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+    const setB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+    let inter = 0;
+    for (const w of setA) if (setB.has(w)) inter++;
+    const union = new Set([...setA, ...setB]).size;
+    const jaccard = union ? inter / union : 0;
+    return jaccard >= 0.4; // comparten suficientes palabras -> es una edición real
+}
+
 async function triggerCorrectionCheck() {
     // Si hay un temporizador activo, lo limpiamos
     if (learnDebounceTimer) {
@@ -4195,7 +4229,12 @@ async function triggerCorrectionCheck() {
     if (currentText !== cleanLastSystemText) {
         // Marcamos como sincronizado para evitar ejecuciones repetidas
         lastSystemText = currentText;
-        await learnCorrections(cleanLastSystemText, currentText, apiKey);
+        // Solo aprendemos si el texto actual parece una EDICIÓN del informe anterior.
+        // Si es un dictado nuevo (texto muy distinto), evitamos una llamada inútil a Gemini
+        // que además competía por la cuota gratuita con el procesado real.
+        if (_pareceEdicion(cleanLastSystemText, currentText)) {
+            await learnCorrections(cleanLastSystemText, currentText, apiKey);
+        }
     }
 }
 
