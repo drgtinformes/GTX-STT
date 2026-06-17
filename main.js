@@ -1064,11 +1064,15 @@ clearBtn.addEventListener('click', () => {
 const openaiKeyInput = document.getElementById('openai-key-input');
 const anthropicKeyInput = document.getElementById('anthropic-key-input');
 const formatterModelSelect = document.getElementById('formatter-model-select');
+const openrouterKeyInput = document.getElementById('openrouter-key-input');
+const openrouterModelInput = document.getElementById('openrouter-model-input');
 
 // Cargar API Keys si existen
 const savedApiKey = localStorage.getItem('gemini_api_key');
 const savedOpenAIKey = localStorage.getItem('openai_api_key');
 const savedAnthropicKey = localStorage.getItem('anthropic_api_key');
+const savedOpenrouterKey = localStorage.getItem('openrouter_api_key');
+const savedOpenrouterModel = localStorage.getItem('openrouter_model') || 'nvidia/nemotron-3-super-120b-a12b:free';
 // Migración: el valor del selector pasó de 'claude-4.7-opus' a 'claude-opus-4-8' (mismo destino, nombre claro)
 if (localStorage.getItem('formatter_model') === 'claude-4.7-opus') localStorage.setItem('formatter_model', 'claude-opus-4-8');
 const savedFormatterModel = localStorage.getItem('formatter_model') || 'auto';
@@ -1076,13 +1080,15 @@ const savedFormatterModel = localStorage.getItem('formatter_model') || 'auto';
 if (savedApiKey && apiKeyInput) apiKeyInput.value = savedApiKey;
 if (savedOpenAIKey && openaiKeyInput) openaiKeyInput.value = savedOpenAIKey;
 if (savedAnthropicKey && anthropicKeyInput) anthropicKeyInput.value = savedAnthropicKey;
+if (savedOpenrouterKey && openrouterKeyInput) openrouterKeyInput.value = savedOpenrouterKey;
+if (openrouterModelInput) openrouterModelInput.value = savedOpenrouterModel;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 // Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const nombre = fm.startsWith('claude') ? 'Claude Opus 4.8' : 'Gemini';
+    const nombre = fm.startsWith('claude') ? 'Claude Opus 4.8' : (fm === 'openrouter' ? 'OpenRouter' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
 }
@@ -1106,6 +1112,8 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('gemini_api_key', geminiKey);
     localStorage.setItem('openai_api_key', openaiKey);
     localStorage.setItem('anthropic_api_key', anthropicKey);
+    if (openrouterKeyInput) localStorage.setItem('openrouter_api_key', openrouterKeyInput.value.trim());
+    if (openrouterModelInput) localStorage.setItem('openrouter_model', (openrouterModelInput.value.trim() || 'nvidia/nemotron-3-super-120b-a12b:free'));
     localStorage.setItem('formatter_model', formatterModel);
     actualizarBotonIA();
     
@@ -1453,6 +1461,93 @@ aiProcessBtn.addEventListener('click', async () => {
                 alert(`Error de red al conectar con Anthropic. Esto suele deberse a restricciones de CORS del navegador para llamadas directas a APIs externas.\n\nSolución: Instala y activa una extensión de CORS bypass (ej: 'Allow CORS: Access-Control-Allow-Origin') en tu navegador o configura un proxy local.`);
             } else {
                 alert(`Ocurrió un error con Claude: ${error.message}`);
+            }
+        } finally {
+            aiProcessBtn.innerHTML = originalBtnText;
+            aiProcessBtn.disabled = false;
+        }
+        return;
+    }
+
+    // === Rama OpenRouter (API compatible con OpenAI) ===
+    if (formatterModel === 'openrouter') {
+        const openrouterKey = localStorage.getItem('openrouter_api_key');
+        const openrouterModel = (localStorage.getItem('openrouter_model') || 'nvidia/nemotron-3-super-120b-a12b:free').trim();
+        if (!openrouterKey) {
+            alert('Debes configurar tu API Key de OpenRouter primero haciendo clic en el icono de configuración (engranaje).');
+            configModal.classList.remove('hidden');
+            return;
+        }
+
+        const originalBtnText = aiProcessBtn.innerHTML;
+        aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Procesando...';
+        aiProcessBtn.disabled = true;
+
+        try {
+            let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+            if (Object.keys(correctionsDict).length > 0) {
+                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+                for (const [wrong, right] of Object.entries(correctionsDict)) {
+                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+                    }
+                }
+                systemPrompt += customRules;
+            }
+            const _hoy = new Date();
+            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+            systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
+            const payload = {
+                model: openrouterModel,
+                temperature: 0.2,
+                max_tokens: 4096,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }
+                ]
+            };
+
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${openrouterKey}`,
+                    'HTTP-Referer': (typeof location !== 'undefined' && location.origin) ? location.origin : 'https://dictado.local',
+                    'X-Title': 'Dictado Radiologico'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const errDetail = (errData.error && errData.error.message) ? errData.error.message : `HTTP ${response.status}`;
+                throw new Error(errDetail);
+            }
+
+            const responseData = await response.json();
+            const resultRaw = (responseData.choices && responseData.choices[0] && responseData.choices[0].message) ? responseData.choices[0].message.content : '';
+            if (resultRaw && resultRaw.trim()) {
+                let resultText = resultRaw;
+                resultText = adjustHeadersForSetTotal(resultText);
+                resultText = ensureCBCTParams(resultText, textToProcess);
+                transcriptionArea.value = resultText;
+                finalTranscript = resultText;
+                lastSystemText = resultText;
+                saveToHistory(resultText);
+                avisarDientesOmitidos(textToProcess, resultText);
+                incrementarContadorInformes();
+            } else {
+                throw new Error("OpenRouter no devolvió ningún contenido.");
+            }
+        } catch (error) {
+            console.error("Error al procesar con OpenRouter:", error);
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('CORS')) {
+                alert(`Error de red al conectar con OpenRouter. Puede deberse a restricciones de CORS del navegador.\n\nSi persiste, procesa a través de un proxy/servidor local en lugar de llamar directo desde el navegador.`);
+            } else {
+                alert(`Ocurrió un error con OpenRouter: ${error.message}`);
             }
         } finally {
             aiProcessBtn.innerHTML = originalBtnText;
