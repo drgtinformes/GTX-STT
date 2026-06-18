@@ -2137,6 +2137,7 @@ async function prepareDocument() {
         const out = doc.getZip().generate({
             type: "blob",
             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            compression: "DEFLATE", // Comprime el .docx como lo hace Word real. Sin esto sale sin comprimir (~3x mas grande) y Gmail lo marca como "virus detectado" (falso positivo).
         });
         
         const safePatientName = dictValues.PACIENTE.replace(/[^a-z0-9áéíóúñ -]/gi, '').trim() || 'Informe';
