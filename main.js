@@ -1088,7 +1088,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const nombre = fm.startsWith('claude') ? 'Claude Opus 4.8' : (fm === 'openrouter' ? 'OpenRouter' : 'Gemini');
+    const nombre = fm.startsWith('claude') ? 'Claude Opus 4.8' : (fm === 'openrouter' ? 'OpenRouter' : (fm === 'gpt-4o-mini' ? 'GPT-4o mini' : 'Gemini'));
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
 }
@@ -1461,6 +1461,90 @@ aiProcessBtn.addEventListener('click', async () => {
                 alert(`Error de red al conectar con Anthropic. Esto suele deberse a restricciones de CORS del navegador para llamadas directas a APIs externas.\n\nSolución: Instala y activa una extensión de CORS bypass (ej: 'Allow CORS: Access-Control-Allow-Origin') en tu navegador o configura un proxy local.`);
             } else {
                 alert(`Ocurrió un error con Claude: ${error.message}`);
+            }
+        } finally {
+            aiProcessBtn.innerHTML = originalBtnText;
+            aiProcessBtn.disabled = false;
+        }
+        return;
+    }
+
+    // === Rama GPT-4o mini (OpenAI) ===
+    if (formatterModel === 'gpt-4o-mini') {
+        const openaiKey = localStorage.getItem('openai_api_key');
+        if (!openaiKey) {
+            alert('Debes configurar tu API Key de OpenAI primero haciendo clic en el icono de configuración (engranaje).');
+            configModal.classList.remove('hidden');
+            return;
+        }
+
+        const originalBtnText = aiProcessBtn.innerHTML;
+        aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Procesando...';
+        aiProcessBtn.disabled = true;
+
+        try {
+            let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+            if (Object.keys(correctionsDict).length > 0) {
+                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+                for (const [wrong, right] of Object.entries(correctionsDict)) {
+                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+                    }
+                }
+                systemPrompt += customRules;
+            }
+            const _hoy = new Date();
+            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+            systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
+            const payload = {
+                model: "gpt-4o-mini",
+                temperature: 0.2,
+                max_tokens: 4096,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }
+                ]
+            };
+
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${openaiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const errDetail = (errData.error && errData.error.message) ? errData.error.message : `HTTP ${response.status}`;
+                throw new Error(errDetail);
+            }
+
+            const responseData = await response.json();
+            const resultRaw = (responseData.choices && responseData.choices[0] && responseData.choices[0].message) ? responseData.choices[0].message.content : '';
+            if (resultRaw && resultRaw.trim()) {
+                let resultText = resultRaw;
+                resultText = adjustHeadersForSetTotal(resultText);
+                resultText = ensureCBCTParams(resultText, textToProcess);
+                transcriptionArea.value = resultText;
+                finalTranscript = resultText;
+                lastSystemText = resultText;
+                saveToHistory(resultText);
+                avisarDientesOmitidos(textToProcess, resultText);
+                incrementarContadorInformes();
+            } else {
+                throw new Error("OpenAI (GPT-4o mini) no devolvió ningún contenido.");
+            }
+        } catch (error) {
+            console.error("Error al procesar con GPT-4o mini:", error);
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('CORS')) {
+                alert(`Error de red al conectar con OpenAI. Puede deberse a restricciones de CORS del navegador.\n\nSi persiste, procesa a través de un proxy/servidor local en lugar de llamar directo desde el navegador.`);
+            } else {
+                alert(`Ocurrió un error con GPT-4o mini: ${error.message}`);
             }
         } finally {
             aiProcessBtn.innerHTML = originalBtnText;
