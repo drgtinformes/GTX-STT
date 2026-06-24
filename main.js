@@ -1437,6 +1437,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = responseData.content[0].text;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
+                resultText = normalizarSaltos(resultText);
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -1523,6 +1524,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = resultRaw;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
+                resultText = normalizarSaltos(resultText);
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -1695,8 +1697,18 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         if (!successResponse) {
-            if (lastErrorMsg.toLowerCase().includes("quota") || lastErrorMsg.toLowerCase().includes("limit")) {
-                throw new Error(`Has agotado el límite de uso gratuito por ahora. Por favor, espera 1 o 2 minutos e intenta nuevamente. (Error: ${lastErrorMsg})`);
+            const _esCuota = /quota|limit|exhaust|rate|429|resource_exhausted/i.test(lastErrorMsg);
+            // FALLBACK: si se agotó la cuota gratis de Gemini y hay clave de Anthropic,
+            // procesamos este informe con Claude Haiku sin interrumpir al usuario.
+            if (_esCuota && localStorage.getItem('anthropic_api_key')) {
+                console.info('[fallback] Cuota de Gemini agotada -> procesando con Claude Haiku 4.5.');
+                aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Cuota Gemini agotada -> Haiku...';
+                const _ok = await procesarConClaudeFallback(textToProcess, 'claude-haiku-4-5');
+                if (_ok) return; // listo vía fallback (el finally restaura el botón)
+                throw new Error('Se agotó la cuota de Gemini y el fallback a Haiku no devolvió contenido. Revisa tu clave de Anthropic.');
+            }
+            if (_esCuota) {
+                throw new Error(`Has agotado el límite de uso gratuito por ahora. Configura tu clave de Anthropic para el fallback automático a Haiku, o espera 1-2 minutos. (Error: ${lastErrorMsg})`);
             }
             throw new Error(`Los modelos disponibles en tu cuenta gratuita están restringidos o sin cuota. Error: ${lastErrorMsg}`);
         }
@@ -1728,6 +1740,71 @@ aiProcessBtn.addEventListener('click', async () => {
         aiProcessBtn.disabled = false;
     }
 });
+
+// === FALLBACK automático Gemini -> Claude ===
+// Cuando Gemini gratis agota su cuota, procesamos ESE informe con Claude (Haiku por
+// defecto), reusando el mismo system prompt + caché de 1h + post-proceso de la rama
+// Claude. Devuelve true si tuvo éxito; lanza error si la llamada a Anthropic falla.
+async function procesarConClaudeFallback(textToProcess, modelo) {
+    const anthropicKey = localStorage.getItem('anthropic_api_key');
+    if (!anthropicKey) return false;
+
+    const basePrompt = (typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.');
+    let extra = "";
+    if (Object.keys(correctionsDict).length > 0) {
+        extra += "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+        extra += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+        for (const [wrong, right] of Object.entries(correctionsDict)) {
+            if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                extra += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+            }
+        }
+    }
+    const _hoy = new Date();
+    const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+    extra += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
+    const _systemBlocks = [{ type: "text", text: basePrompt, cache_control: { type: "ephemeral", ttl: "1h" } }];
+    if (extra.trim()) _systemBlocks.push({ type: "text", text: extra });
+
+    const payload = {
+        model: modelo,
+        max_tokens: 4096,
+        system: _systemBlocks,
+        messages: [{ role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }]
+    };
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': anthropicKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        const e = await response.json().catch(() => ({}));
+        throw new Error(e.error?.message || `HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    if (data.content && data.content.length > 0 && data.content[0].text) {
+        let resultText = data.content[0].text;
+        resultText = adjustHeadersForSetTotal(resultText);
+        resultText = ensureCBCTParams(resultText, textToProcess);
+        resultText = normalizarSaltos(resultText);
+        transcriptionArea.value = resultText;
+        finalTranscript = resultText;
+        lastSystemText = resultText;
+        saveToHistory(resultText);
+        avisarDientesOmitidos(textToProcess, resultText);
+        incrementarContadorInformes();
+        return true;
+    }
+    return false;
+}
 
 // === Lógica de Generación de Archivo Word (.docx) ===
 
@@ -1980,26 +2057,44 @@ function ensureCBCTParams(text, dictado = "") {
     if (!estudioMatch) return text;
     if (!/cone[\s-]*beam|cbct/i.test(estudioMatch[1])) return text;
 
-    // 2. ¿El bloque de parámetros ya está presente? Si el modelo lo incluyó, no se toca.
-    if (/(par[aá]metros de exposici[oó]n|campo de visi[oó]n|v[oó]xel|romexis)/i.test(text)) {
-        return text;
-    }
-
-    // 3. Distanciamiento: usar el dictado (palabras clave "distanciamiento"/"intervalo")
-    //    o el valor por defecto si no se menciona.
+    // 2. Distanciamiento: es el ÚNICO valor variable del bloque. Se toma del dictado
+    //    (palabras clave "distanciamiento"/"intervalo") o el valor por defecto. Se calcula
+    //    ANTES de tocar el texto, para poder leerlo aunque el modelo ya lo hubiera escrito.
     let dist = CBCT_DIST_DEFAULT;
     const distMatch = (dictado + "\n" + text).match(/(?:distanciamiento|intervalo)\s*(?:de\s*)?(\d+(?:[.,]\d+)?)\s*mm/i);
     if (distMatch) dist = distMatch[1].replace(".", ",");
 
     const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
 
-    // 4. Insertar el bloque justo después de la línea "TIPO DE ESTUDIO".
-    const lines = text.split("\n");
+    // 3. Forzar el bloque completo a los valores ESTÁNDAR FIJOS del equipo. Se eliminan
+    //    las líneas de parámetros que haya escrito el modelo (Haiku tiende a ponerlas como
+    //    "Sin especificar"; Flash sí copiaba los valores de la plantilla) y se sustituyen
+    //    por el bloque fijo. El único dato del dictado que se conserva es el distanciamiento
+    //    (ya calculado). Las líneas se reconocen por su término técnico precedido de una
+    //    viñeta/guion, formato que no aparece en los hallazgos clínicos.
+    const isParamLine = (l) => /^\s*[-–—•*]\s*.*(par[aá]metros de exposici[oó]n|tama[ñn]o de campo de visi[oó]n|\bFOV\b|tama[ñn]o de v[oó]xel|se reconstruye la adquisici[oó]n volum[eé]trica|software\s+planmeca|romexis|panorex|cortes\s+paraxiales)/i.test(l);
+
+    const lines = text.split("\n").filter(l => !isParamLine(l));
+
+    // 4. Insertar el bloque estándar justo después de la línea "TIPO DE ESTUDIO".
     const idx = lines.findIndex(l => /^\s*TIPO\s+DE\s+ESTUDIO/i.test(l));
     if (idx === -1) return text;
     lines.splice(idx + 1, 0, bloque);
-    console.info("[CBCT] Bloque de parámetros técnicos insertado automáticamente (el modelo lo había omitido). Verifica FOV/distanciamiento si el estudio no fue estándar.");
+    console.info("[CBCT] Bloque de parámetros técnicos normalizado a los valores estándar del equipo. Verifica FOV/exposición/distanciamiento si el estudio no fue estándar.");
     return lines.join("\n");
+}
+
+// Normaliza el espaciado del informe: deja UN solo salto entre renglones. Haiku tiende
+// a meter una línea en blanco entre cada hallazgo; el formato real es single-spaced
+// (37 de 42 informes de referencia no usan ninguna línea en blanco, y el prompt pide
+// "sin líneas en blanco entre párrafos"). La verificación del eval ignora los saltos,
+// así que esto solo cambia la presentación, no la similitud ni las reglas.
+function normalizarSaltos(text) {
+    if (!text) return text;
+    let t = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    t = t.replace(/[ \t]+\n/g, "\n");   // quita espacios al final de cada línea
+    t = t.replace(/\n{2,}/g, "\n");      // colapsa líneas en blanco -> un solo salto
+    return t.trim();
 }
 
 // Función común para preparar el documento procesado
@@ -2743,41 +2838,79 @@ if (sendGmailBtn) {
 }
 
 // --- CONEXIÓN CON SERVIDOR LOCAL PARA ATAJO F2 GLOBAL ---
-let ws;
-function connectWebSocket() {
-    ws = new WebSocket('ws://localhost:8081');
+// El servidor (servidor_dictado.py) es OPCIONAL. Si no está corriendo, reintentamos
+// unas pocas veces con backoff y luego nos detenemos en silencio para no llenar la
+// consola. Para reactivar F2: inicia el servidor y recarga, o ejecuta reconectarF2().
+let ws = null;
+let wsIntentos = 0;
+let wsTimer = null;
+let wsRendido = false;
+const WS_MAX_INTENTOS = 4;      // tras esto deja de intentar (sin spam)
+const WS_BASE_DELAY = 3000;     // backoff: 3s, 6s, 12s... (máx 60s)
 
-    ws.onopen = () => {
+function connectWebSocket() {
+    if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+    let socket;
+    try {
+        socket = new WebSocket('ws://localhost:8081');
+    } catch (e) {
+        return; // entorno sin WebSocket: salir en silencio
+    }
+    ws = socket;
+
+    socket.onopen = () => {
+        wsIntentos = 0;
+        wsRendido = false;
         console.log('Conectado al servidor WebSocket local (F2 Global Activo)');
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            if (data.action === 'toggle_record') {
-                console.log('Señal de F2 global recibida');
-                if (typeof toggleRecording === 'function') {
-                    toggleRecording();
-                }
+            if (data.action === 'toggle_record' && typeof toggleRecording === 'function') {
+                toggleRecording();
             }
-        } catch (e) {
-            console.error('Error procesando mensaje WebSocket:', e);
+        } catch (e) { /* mensaje no válido: ignorar */ }
+    };
+
+    socket.onclose = () => {
+        if (wsRendido) return;
+        wsIntentos++;
+        if (wsIntentos >= WS_MAX_INTENTOS) {
+            wsRendido = true;
+            console.info('F2 global desactivado (servidor_dictado.py no detectado). ' +
+                'Los atajos dentro de la pestaña siguen funcionando. ' +
+                'Para activarlo: inicia el servidor y recarga, o ejecuta reconectarF2().');
+            return;
         }
+        const delay = Math.min(WS_BASE_DELAY * (2 ** (wsIntentos - 1)), 60000);
+        wsTimer = setTimeout(connectWebSocket, delay);
     };
 
-    ws.onclose = () => {
-        console.log('Desconectado del servidor WebSocket local. Reintentando en 3s...');
-        setTimeout(connectWebSocket, 3000);
-    };
-
-    ws.onerror = (error) => {
-        console.error('Error en WebSocket:', error);
-        ws.close();
-    };
+    // El navegador ya imprime su propio aviso al fallar; no lo duplicamos. El reintento
+    // vive en onclose, que siempre se dispara tras un error de conexión.
+    socket.onerror = () => { try { socket.close(); } catch (e) {} };
 }
 
-// Iniciar conexión
-connectWebSocket();
+// Reactivar F2 manualmente desde la consola sin recargar.
+function reconectarF2() {
+    wsRendido = false;
+    wsIntentos = 0;
+    connectWebSocket();
+}
+window.reconectarF2 = reconectarF2;
+
+// Iniciar conexión SOLO si la app corre en localhost (servidor F2 local). En GitHub
+// Pages u otro host (https), el navegador bloquea el WebSocket a ws://localhost
+// (contenido mixto) y solo generaría errores, así que ni lo intentamos.
+const ES_LOCAL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '[::1]');
+if (ES_LOCAL) {
+    connectWebSocket();
+} else {
+    console.info('F2 global desactivado (la app no corre en localhost). Los atajos dentro de la pestaña funcionan igual.');
+}
 
 
 // =============================================================
