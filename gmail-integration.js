@@ -4,9 +4,19 @@
  */
 
 const GMAIL_CONFIG = {
-    // Las claves ahora se cargan desde secrets.js (archivo no subido a GitHub)
-    CLIENT_ID: typeof GMAIL_SECRETS !== 'undefined' ? GMAIL_SECRETS.CLIENT_ID : '',
-    API_KEY: typeof GMAIL_SECRETS !== 'undefined' ? GMAIL_SECRETS.API_KEY : '',
+    // IMPORTANTE: en GitHub Pages secrets.js NO existe (está en .gitignore), por lo
+    // que las claves DEBEN estar también aquí o la app no autentica en producción.
+    // Esto es seguro para una app 100% de navegador:
+    //   - El CLIENT_ID de OAuth es PÚBLICO por diseño; se protege con los "Orígenes
+    //     de JavaScript autorizados" en Google Cloud (solo tu dominio puede usarlo).
+    //   - El API_KEY se protege restringiéndolo por "Referente HTTP" a tu dominio.
+    // secrets.js sigue funcionando como override opcional para desarrollo local.
+    CLIENT_ID: (typeof GMAIL_SECRETS !== 'undefined' && GMAIL_SECRETS.CLIENT_ID)
+        ? GMAIL_SECRETS.CLIENT_ID
+        : '635192566350-l0vm8dr68m64boj6kko03jjp7t7reaue.apps.googleusercontent.com',
+    API_KEY: (typeof GMAIL_SECRETS !== 'undefined' && GMAIL_SECRETS.API_KEY)
+        ? GMAIL_SECRETS.API_KEY
+        : 'AIzaSyB9_0ywJNzTrPwE0EVhCjQfdq9oIiOp4co',
     DISCOVERY_DOCS: ["https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest"],
     SCOPES: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send"
 };
@@ -38,13 +48,33 @@ async function intializeGapiClient() {
  * Callback after Google Identity Services are loaded.
  */
 function gisLoaded() {
+    ensureTokenClient();
+}
+
+/**
+ * Crea el tokenClient de Google Identity Services de forma perezosa.
+ * Devuelve el cliente, o null si GIS todavía no está disponible (el script aún
+ * carga o fue bloqueado por una extensión) o si falta el CLIENT_ID.
+ * Llamar a esto en vez de asumir que tokenClient ya existe evita el crash
+ * "Cannot set properties of undefined (setting 'callback')".
+ */
+function ensureTokenClient() {
+    if (tokenClient) return tokenClient;
+    if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+        return null; // GIS aún no cargó
+    }
+    if (!GMAIL_CONFIG.CLIENT_ID) {
+        console.error("Falta el CLIENT_ID de Google. Revisa gmail-integration.js / secrets.js");
+        return null;
+    }
     tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: GMAIL_CONFIG.CLIENT_ID,
         scope: GMAIL_CONFIG.SCOPES,
-        callback: '', // defined later
+        callback: '', // se define en cada authenticateGmail()
     });
     gsisInited = true;
     checkBeforeStart();
+    return tokenClient;
 }
 
 function checkBeforeStart() {
@@ -67,8 +97,16 @@ function authenticateGmail() {
             return;
         }
 
-        // 2. Si no hay, pedir uno nuevo
-        tokenClient.callback = async (resp) => {
+        // 2. Asegurar que el cliente de Google esté listo (evita el crash si el
+        //    script de GIS aún no cargó o fue bloqueado por una extensión).
+        const tc = ensureTokenClient();
+        if (!tc) {
+            reject(new Error("Google aún no termina de cargar (o una extensión bloqueó accounts.google.com). Espera unos segundos y vuelve a intentar."));
+            return;
+        }
+
+        // 3. Pedir un token nuevo
+        tc.callback = async (resp) => {
             if (resp.error !== undefined) {
                 reject(resp);
                 return;
@@ -78,12 +116,8 @@ function authenticateGmail() {
             resolve(resp);
         };
 
-        if (gapi.client.getToken() === null) {
-            // Force account selection to allow user to choose drgtinformes@gmail.com
-            tokenClient.requestAccessToken({prompt: 'select_account'}); 
-        } else {
-            tokenClient.requestAccessToken({prompt: 'select_account'});
-        }
+        // Forzar selección de cuenta para poder elegir drgtinformes@gmail.com
+        tc.requestAccessToken({prompt: 'select_account'});
     });
 }
 
