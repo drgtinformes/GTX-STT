@@ -70,6 +70,20 @@ Sistema FDI (1.1 a 4.8)
 
     Dentición Mixta: Los dientes temporales (5, 6, 7, 8) se integran en su bloque anatómico correspondiente (1-5, 2-6, 4-8, 3-7).
 
+    REGLA DE DIENTES TEMPORALES / DECIDUOS (CRÍTICA, PRIORIDAD MÁXIMA — NUNCA "CORREGIR" EL CUADRANTE 5, 6, 7 u 8):
+    DISPARADOR: cualquier diente cuyo PRIMER dígito dictado sea 5, 6, 7 u 8 (ej. "5.4", "6.4", "7.4", "8.4", o dictado como "cinco punto cuatro", "ocho punto cuatro"). Son dientes TEMPORALES (deciduos): EXISTEN y son perfectamente válidos.
+    Está TERMINANTEMENTE PROHIBIDO cambiar, "normalizar", "armonizar" o "corregir" el primer dígito de un diente temporal hacia su cuadrante permanente. El primer dígito se transcribe EXACTAMENTE como se dictó:
+    - PROHIBIDO convertir 5.4 → 1.4
+    - PROHIBIDO convertir 6.4 → 2.4
+    - PROHIBIDO convertir 7.4 → 3.4
+    - PROHIBIDO convertir 8.4 → 4.4
+    (lo mismo para CUALQUIER otra pieza de los cuadrantes 5, 6, 7 y 8: el primer dígito jamás se baja a 1-4).
+    NO importa que el resto del informe esté lleno de dientes permanentes (cuadrantes 1-4) ni que el paciente esté en dentición mixta: si el usuario dictó "cinco", el informe dice 5; "seis" → 6; "siete" → 7; "ocho" → 8. JAMÁS ajustes un diente temporal para que "calce" con la dentición permanente del entorno.
+    DISPARADOR CLÍNICO ADICIONAL — PERSISTENCIA + AGENESIA (es el error MÁS común y está ABSOLUTAMENTE PROHIBIDO): cuando se dicta que un diente temporal (primer dígito 5, 6, 7 u 8) "persiste", está "en boca", "permanece", "retenido" o "remanente", y su sucesor permanente (mismo segundo dígito, cuadrante 1-4) fue dictado como AUSENTE o con AGENESIA, son DOS dientes DISTINTOS y AMBOS van tal cual se dictaron. NUNCA reemplaces el temporal por el permanente: además de violar la regla, crea una contradicción imposible (un mismo diente no puede ser agenésico Y a la vez persistir en boca).
+    EJEMPLO REAL DEL ERROR A EVITAR — dictado: "Dientes 4.5 y 3.5 agenesias ... diente 7.5 persistencia en boca, restaurado".
+    - CORRECTO: una línea "Dientes 4.5 y 3.5: Agenesias." y otra línea aparte "Diente 7.5: Persistencia en boca. Restaurado. ..." (el 7.5 se mantiene como 7.5).
+    - INCORRECTO Y PROHIBIDO: escribir "Diente 3.5: Persistencia en boca..." (cambiaste 7.5 → 3.5; ahora el 3.5 figura como agenésico y persistente a la vez: imposible).
+
 Sistema Internacional / Universal / Nacional (1 a 32, Letras A a T)
 
 Distribución Permanente: Piezas 1-16 en MAXILAR (o ARCADA SUPERIOR); piezas 17-32 en MANDÍBULA (o ARCADA INFERIOR).

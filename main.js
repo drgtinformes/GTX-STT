@@ -1816,12 +1816,21 @@ function avisarDientesOmitidos(dictado, informe) {
         const enDictado = new Set((dictado || '').match(re) || []);
         const enInforme = new Set((informe || '').match(re) || []);
         const faltantes = [...enDictado].filter(d => !enInforme.has(d)).sort();
-        if (faltantes.length > 0) {
-            alert("⚠️ POSIBLE OMISIÓN DE DIENTES\n\n" +
+        if (faltantes.length === 0) return;
+
+        // Los temporales (primer dígito 5-8) son el caso crítico: Haiku tiende a
+        // "normalizarlos" a su diente permanente (ej. 7.5 -> 3.5). Se destacan aparte.
+        const temporales = faltantes.filter(d => /^[5-8]\./.test(d));
+        let msg = "⚠️ POSIBLE OMISIÓN DE DIENTES\n\n" +
                   "Estos dientes estaban en el dictado pero NO aparecen en el informe generado:\n\n" +
-                  faltantes.join(",  ") +
-                  "\n\nRevisa el informe o vuelve a procesar.");
+                  faltantes.join(",  ");
+        if (temporales.length > 0) {
+            msg += "\n\n🦷 OJO con el/los diente(s) TEMPORAL(ES) " + temporales.join(", ") +
+                   ": revisa que la IA no los haya cambiado por su permanente (ej. 7.5 → 3.5). " +
+                   "Deben aparecer tal cual los dictaste.";
         }
+        msg += "\n\nRevisa el informe o vuelve a procesar.";
+        alert(msg);
     } catch (e) {
         console.warn("No se pudo verificar omisión de dientes:", e);
     }
