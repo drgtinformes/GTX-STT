@@ -1812,7 +1812,7 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
 // dictado que la IA omitió en el informe, y avisa al usuario para que los revise.
 function avisarDientesOmitidos(dictado, informe) {
     try {
-        const re = /\b[1-4]\.[1-8]\b/g;
+        const re = /\b[1-8]\.[1-8]\b/g;
         const enDictado = new Set((dictado || '').match(re) || []);
         const enInforme = new Set((informe || '').match(re) || []);
         const faltantes = [...enDictado].filter(d => !enInforme.has(d)).sort();
@@ -2084,17 +2084,34 @@ function ensureCBCTParams(text, dictado = "") {
     return lines.join("\n");
 }
 
-// Normaliza el espaciado del informe: deja UN solo salto entre renglones. Haiku tiende
-// a meter una línea en blanco entre cada hallazgo; el formato real es single-spaced
-// (37 de 42 informes de referencia no usan ninguna línea en blanco, y el prompt pide
-// "sin líneas en blanco entre párrafos"). La verificación del eval ignora los saltos,
-// así que esto solo cambia la presentación, no la similitud ni las reglas.
+// Normaliza el espaciado del informe en DOS pasos:
+//  1) Colapsa TODA línea en blanco a un solo salto. Haiku tiende a meter una línea en
+//     blanco entre cada hallazgo; dentro de un bloque el formato es single-spaced.
+//  2) Reinserta UNA línea en blanco SOLO antes de cada encabezado de bloque mayor
+//     (datos clínicos / impresión / arcadas), como en los informes de referencia y como
+//     pidió el usuario. Es estructura FIJA, así que se hace por código y queda idéntico
+//     con cualquier modelo (Haiku, Flash, etc.), sin depender de que el modelo lo respete.
+// La verificación del eval ignora los saltos, así que esto solo cambia la presentación.
 function normalizarSaltos(text) {
     if (!text) return text;
     let t = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     t = t.replace(/[ \t]+\n/g, "\n");   // quita espacios al final de cada línea
-    t = t.replace(/\n{2,}/g, "\n");      // colapsa líneas en blanco -> un solo salto
-    return t.trim();
+    t = t.replace(/\n{2,}/g, "\n");      // colapsa TODA línea en blanco -> un solo salto
+    t = t.trim();
+
+    // Encabezados que abren un bloque y deben llevar una línea en blanco por encima.
+    // (QUE DESEA SABER y TIPO DE ESTUDIO NO van aquí: pertenecen al mismo bloque que
+    // ANT. CLÍNICOS y van pegados a él.)
+    const ES_ENCABEZADO_BLOQUE = /^\s*(ANT\.?\s+CL[IÍ]NICOS|EN BASE A LAS IM[AÁ]GENES|MAXILAR\s*:|MAND[IÍ]BULA\s*:|ARCADA\s+SUPERIOR\s*:|ARCADA\s+INFERIOR\s*:|ATM\s+DERECHA\s*:|ATM\s+IZQUIERDA\s*:)/i;
+    const lineas = t.split("\n");
+    const salida = [];
+    for (let i = 0; i < lineas.length; i++) {
+        if (i > 0 && ES_ENCABEZADO_BLOQUE.test(lineas[i]) && salida[salida.length - 1].trim() !== "") {
+            salida.push("");   // línea en blanco de separación entre bloques
+        }
+        salida.push(lineas[i]);
+    }
+    return salida.join("\n");
 }
 
 // Función común para preparar el documento procesado
@@ -2324,7 +2341,7 @@ if (generatePdfBtn) generatePdfBtn.addEventListener('click', async () => {
 // Función para detectar y validar números de dientes en el texto
 function validateFDINomenclature(text) {
     // Patrón para capturar potenciales piezas FDI X.Y
-    const fdiPattern = /\b([1-4])\.(\d)\b/g;
+    const fdiPattern = /\b([1-8])\.(\d)\b/g;
     
     let issues = [];
     let matches = text.matchAll(fdiPattern);
