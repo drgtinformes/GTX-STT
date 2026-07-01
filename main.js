@@ -3900,10 +3900,11 @@ async function loadVisionModels() {
         availableModels = availableModels.filter(m => isModernModel(m.name));
 
         if (visionModelSelect && availableModels.length > 0) {
-            // Limpiar excepto auto y Claude 4.7 Opus
+            // Limpiar excepto auto y opciones Claude (Opus 4.8 / Sonnet 5)
             visionModelSelect.innerHTML = `
                 <option value="auto">🔍 Selección Automática (Mejor disponible)</option>
                 <option value="claude-opus-4-8">Claude Opus 4.8 (Anthropic)</option>
+                <option value="claude-sonnet-5">Claude Sonnet 5 (Anthropic)</option>
             `;
             
             // Priorización: 1) Pro, 2) Flash 2.x, 3) Flash 1.5
@@ -4103,7 +4104,7 @@ if (visionAnalyzeBtn) {
         const selectedModelValue = visionModelSelect ? visionModelSelect.value : 'auto';
         let apiKey = null;
 
-        if (selectedModelValue === 'claude-opus-4-8') {
+        if (selectedModelValue.startsWith('claude')) {
             const anthropicKey = localStorage.getItem('anthropic_api_key');
             if (!anthropicKey) {
                 alert('Debes configurar tu API Key de Anthropic primero en la configuración.');
@@ -4133,10 +4134,10 @@ if (visionAnalyzeBtn) {
             let successResponse = null;
             let lastErrorMsg = "";
 
-            if (selectedModelValue === 'claude-opus-4-8') {
+            if (selectedModelValue.startsWith('claude')) {
                 const anthropicKey = localStorage.getItem('anthropic_api_key');
                 const payload = {
-                    model: "claude-opus-4-8",
+                    model: selectedModelValue,
                     max_tokens: 4096,
                     system: RADIOLOGY_SYSTEM_PROMPT,
                     messages: [
