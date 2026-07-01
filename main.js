@@ -1082,7 +1082,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini' };
+    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini' };
     const nombre = NOMBRES_MODELO[fm] || (fm.startsWith('claude') ? 'Claude' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
