@@ -720,13 +720,16 @@ function buildWhisperPrompt() {
 function toggleRecording() {
     const isWhisper = engineSelect && engineSelect.value === 'whisper';
     const isRealtimeWhisper = engineSelect && engineSelect.value === 'realtime-whisper';
-    
+    const isDeepgram = engineSelect && engineSelect.value === 'deepgram';
+
     if (isRecording) {
         if (isWhisper && mediaRecorder && mediaRecorder.state !== 'inactive') {
             mediaRecorder.stop();
         } else if (isRealtimeWhisper) {
             stopRealtimeWhisperRecording();
-        } else if (!isWhisper && !isRealtimeWhisper) {
+        } else if (isDeepgram) {
+            stopDeepgramRecording();
+        } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram) {
             isRecording = false;
             recognition.stop();
         }
@@ -746,6 +749,8 @@ function toggleRecording() {
                 pauseBtn.classList.remove('hidden');
                 lucide.createIcons();
             }
+        } else if (isDeepgram) {
+            startDeepgramRecording();
         } else {
             try {
                 recognition.start();
@@ -968,6 +973,210 @@ function stopRealtimeWhisperRecording(immediate = false) {
     }
 }
 
+// =========================================================================
+// === MOTOR DEEPGRAM NOVA-3 (Español + Keyterm médico maxilofacial) =======
+// =========================================================================
+// nova-3-medical es SOLO inglés, por eso usamos nova-3 general en 'es' y
+// compensamos el vocabulario médico con keyterm prompting (tu diccionario).
+let deepgramWs = null;
+let deepgramAudioContext = null;
+let deepgramProcessor = null;
+let deepgramStream = null;
+let deepgramSource = null;
+let deepgramKeepAlive = null;
+
+// Términos base maxilofaciales que siempre reforzamos (además del diccionario).
+const DEEPGRAM_BASE_KEYTERMS = [
+    "cóndilo mandibular", "apófisis coronoides", "seno maxilar", "conducto dentario inferior",
+    "reabsorción radicular", "reabsorción ósea", "periápice", "periapical", "radiolúcido",
+    "radiopaco", "cortical ósea", "hueso trabecular", "CBCT", "ATM", "tercer molar",
+    "quiste dentígero", "lesión periapical", "tabique nasal", "fosa nasal", "hiperostosis",
+    "furca", "ligamento periodontal", "lámina dura", "reborde alveolar", "cóndilo"
+];
+
+// Lista de keyterms = base + valores del diccionario del usuario (dedupe + tope).
+function buildDeepgramKeyterms() {
+    const set = new Set();
+    DEEPGRAM_BASE_KEYTERMS.forEach(t => set.add(t.toLowerCase()));
+    if (typeof correctionsDict === 'object' && correctionsDict) {
+        Object.values(correctionsDict).forEach(v => {
+            if (typeof v !== 'string') return;
+            const term = v.trim().toLowerCase();
+            // Solo términos con letras, 3–40 chars y máx 3 palabras (evita frases largas).
+            if (term.length >= 3 && term.length <= 40 && /[a-záéíóúñ]/.test(term) && term.split(/\s+/).length <= 3) {
+                set.add(term);
+            }
+        });
+    }
+    return Array.from(set).slice(0, 80); // muy por debajo del tope de 500 tokens
+}
+
+// Float32 [-1,1] -> PCM 16-bit little-endian (linear16 que espera Deepgram).
+function floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < float32Array.length; i++) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buffer;
+}
+
+// Token para conectar: 1) proxy (token efímero, seguro); 2) API key directa (solo pruebas).
+async function getDeepgramToken() {
+    const proxyUrl = (localStorage.getItem('deepgram_proxy_url') || '').trim();
+    if (proxyUrl) {
+        const resp = await fetch(proxyUrl, { method: 'POST' });
+        if (!resp.ok) throw new Error('El proxy Deepgram respondió ' + resp.status + '. Revisa la URL y el secret.');
+        const data = await resp.json();
+        if (!data.access_token) throw new Error('El proxy no devolvió access_token.');
+        return data.access_token;
+    }
+    const directKey = (localStorage.getItem('deepgram_api_key') || '').trim();
+    if (directKey) return directKey; // modo prueba: clave directa (menos seguro en GitHub Pages)
+    throw new Error('Configura la URL del proxy Deepgram (o una API key) en Configuración.');
+}
+
+async function startDeepgramRecording() {
+    let token;
+    try {
+        token = await getDeepgramToken();
+    } catch (e) {
+        alert(e.message);
+        return;
+    }
+
+    try {
+        if (!deepgramStream) {
+            deepgramStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        const SAMPLE_RATE = 16000;
+        const keyterms = buildDeepgramKeyterms()
+            .map(t => 'keyterm=' + encodeURIComponent(t))
+            .join('&');
+
+        const url = 'wss://api.deepgram.com/v1/listen'
+            + '?model=nova-3'
+            + '&language=es'
+            + '&smart_format=true'
+            + '&interim_results=true'
+            + '&encoding=linear16'
+            + '&sample_rate=' + SAMPLE_RATE
+            + (keyterms ? '&' + keyterms : '');
+
+        // Auth en navegador: subprotocolo ['token', <token>] (no se pueden mandar headers).
+        deepgramWs = new WebSocket(url, ['token', token]);
+
+        deepgramWs.onopen = () => {
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            recordText.innerText = 'Detener Deepgram (F2)';
+            statusText.innerText = 'Grabando (Deepgram Nova-3)...';
+            recordingPulse.classList.remove('hidden');
+
+            deepgramAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            deepgramSource = deepgramAudioContext.createMediaStreamSource(deepgramStream);
+            deepgramProcessor = deepgramAudioContext.createScriptProcessor(4096, 1, 1);
+            deepgramSource.connect(deepgramProcessor);
+            deepgramProcessor.connect(deepgramAudioContext.destination);
+
+            deepgramProcessor.onaudioprocess = (e) => {
+                if (!isRecording || !deepgramWs || deepgramWs.readyState !== WebSocket.OPEN) return;
+                const input = e.inputBuffer.getChannelData(0);
+                deepgramWs.send(floatTo16BitPCM(input));
+            };
+
+            // KeepAlive: evita cierre por inactividad en silencios largos.
+            if (deepgramKeepAlive) clearInterval(deepgramKeepAlive);
+            deepgramKeepAlive = setInterval(() => {
+                if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
+                    deepgramWs.send(JSON.stringify({ type: 'KeepAlive' }));
+                }
+            }, 8000);
+        };
+
+        deepgramWs.onmessage = (message) => {
+            let data;
+            try { data = JSON.parse(message.data); } catch (_) { return; }
+            if (data.type && data.type !== 'Results') return; // ignora Metadata/otros
+            const alt = data.channel && data.channel.alternatives && data.channel.alternatives[0];
+            if (!alt) return;
+            const text = alt.transcript || '';
+
+            if (!data.is_final) {
+                // Vista previa (interino): se muestra sin comprometer aún.
+                transcriptionArea.value = finalTranscript
+                    + (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n') ? ' ' : '')
+                    + text;
+                transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+                return;
+            }
+
+            if (text.trim()) {
+                let corrected = applyCorrections(text.trim());
+                if (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) {
+                    finalTranscript += ' ';
+                }
+                if (finalTranscript.length === 0 || finalTranscript.endsWith('. ') || finalTranscript.endsWith('\n')) {
+                    corrected = corrected.charAt(0).toUpperCase() + corrected.slice(1);
+                }
+                finalTranscript += corrected + ' ';
+                transcriptionArea.value = finalTranscript;
+                lastDictatedText = finalTranscript;
+                lastSystemText = finalTranscript;
+                localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+                transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+            }
+        };
+
+        deepgramWs.onerror = (err) => {
+            console.error('Deepgram WebSocket error:', err);
+            if (isRecording) {
+                alert('Error de conexión con Deepgram. Revisa el proxy/clave y tu saldo.');
+                stopDeepgramRecording(true);
+            }
+        };
+
+        deepgramWs.onclose = (ev) => {
+            console.log('Deepgram WebSocket cerrado.', ev.code, ev.reason || '');
+            if (isRecording) stopDeepgramRecording(true);
+        };
+
+    } catch (e) {
+        console.error('No se pudo iniciar Deepgram:', e);
+        alert('Error al acceder al micrófono o iniciar Deepgram.');
+    }
+}
+
+function stopDeepgramRecording(immediate = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    recordText.innerText = 'Iniciar Dictado (F2)';
+    statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando...';
+    recordingPulse.classList.add('hidden');
+
+    if (deepgramKeepAlive) { clearInterval(deepgramKeepAlive); deepgramKeepAlive = null; }
+    if (deepgramProcessor) { deepgramProcessor.disconnect(); deepgramProcessor = null; }
+    if (deepgramSource) { deepgramSource.disconnect(); deepgramSource = null; }
+    if (deepgramAudioContext && deepgramAudioContext.state !== 'closed') {
+        deepgramAudioContext.close(); deepgramAudioContext = null;
+    }
+
+    if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
+        if (!immediate) {
+            // CloseStream: Deepgram vacía el buffer y manda el último final antes de cerrar.
+            try { deepgramWs.send(JSON.stringify({ type: 'CloseStream' })); } catch (_) {}
+            setTimeout(() => { if (deepgramWs) deepgramWs.close(); statusText.innerText = 'Listo'; }, 1200);
+        } else {
+            deepgramWs.close(); statusText.innerText = 'Listo';
+        }
+    } else {
+        statusText.innerText = 'Listo';
+    }
+}
+
 recordBtn.addEventListener('click', toggleRecording);
 
 if (pauseBtn) {
@@ -1064,6 +1273,8 @@ clearBtn.addEventListener('click', () => {
 const openaiKeyInput = document.getElementById('openai-key-input');
 const anthropicKeyInput = document.getElementById('anthropic-key-input');
 const zaiKeyInput = document.getElementById('zai-key-input');
+const deepgramProxyInput = document.getElementById('deepgram-proxy-input');
+const deepgramKeyInput = document.getElementById('deepgram-key-input');
 const formatterModelSelect = document.getElementById('formatter-model-select');
 
 // Cargar API Keys si existen
@@ -1079,6 +1290,10 @@ if (savedApiKey && apiKeyInput) apiKeyInput.value = savedApiKey;
 if (savedOpenAIKey && openaiKeyInput) openaiKeyInput.value = savedOpenAIKey;
 if (savedAnthropicKey && anthropicKeyInput) anthropicKeyInput.value = savedAnthropicKey;
 if (savedZaiKey && zaiKeyInput) zaiKeyInput.value = savedZaiKey;
+const savedDeepgramProxy = localStorage.getItem('deepgram_proxy_url');
+const savedDeepgramKey = localStorage.getItem('deepgram_api_key');
+if (savedDeepgramProxy && deepgramProxyInput) deepgramProxyInput.value = savedDeepgramProxy;
+if (savedDeepgramKey && deepgramKeyInput) deepgramKeyInput.value = savedDeepgramKey;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 // Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
@@ -1112,6 +1327,8 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('openai_api_key', openaiKey);
     localStorage.setItem('anthropic_api_key', anthropicKey);
     localStorage.setItem('zai_api_key', zaiKey);
+    localStorage.setItem('deepgram_proxy_url', deepgramProxyInput ? deepgramProxyInput.value.trim() : '');
+    localStorage.setItem('deepgram_api_key', deepgramKeyInput ? deepgramKeyInput.value.trim() : '');
     localStorage.setItem('formatter_model', formatterModel);
     actualizarBotonIA();
     
