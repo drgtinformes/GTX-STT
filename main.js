@@ -721,6 +721,7 @@ function toggleRecording() {
     const isWhisper = engineSelect && engineSelect.value === 'whisper';
     const isRealtimeWhisper = engineSelect && engineSelect.value === 'realtime-whisper';
     const isDeepgram = engineSelect && engineSelect.value === 'deepgram';
+    const isSoniox = engineSelect && engineSelect.value === 'soniox';
 
     if (isRecording) {
         if (isWhisper && mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -729,7 +730,9 @@ function toggleRecording() {
             stopRealtimeWhisperRecording();
         } else if (isDeepgram) {
             stopDeepgramRecording();
-        } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram) {
+        } else if (isSoniox) {
+            stopSonioxRecording();
+        } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram && !isSoniox) {
             isRecording = false;
             recognition.stop();
         }
@@ -751,6 +754,8 @@ function toggleRecording() {
             }
         } else if (isDeepgram) {
             startDeepgramRecording();
+        } else if (isSoniox) {
+            startSonioxRecording();
         } else {
             try {
                 recognition.start();
@@ -1177,6 +1182,168 @@ function stopDeepgramRecording(immediate = false) {
     }
 }
 
+// =========================================================================
+// === MOTOR SONIOX (Español / Multilingüe, streaming en tiempo real) ======
+// =========================================================================
+// Soniox autentica con la key en el PRIMER mensaje JSON (no por header/subprotocolo).
+// Reutiliza floatTo16BitPCM() y buildDeepgramKeyterms() del motor Deepgram.
+let sonioxWs = null;
+let sonioxAudioContext = null;
+let sonioxProcessor = null;
+let sonioxStream = null;
+let sonioxSource = null;
+let sonioxBaseTranscript = '';
+let sonioxSessionFinal = '';
+
+// Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
+async function getSonioxToken() {
+    const proxyUrl = (localStorage.getItem('soniox_proxy_url') || '').trim();
+    if (proxyUrl) {
+        const resp = await fetch(proxyUrl, { method: 'POST' });
+        if (!resp.ok) throw new Error('El proxy Soniox respondió ' + resp.status + '. Revisa la URL y el secret.');
+        const data = await resp.json();
+        if (!data.api_key) throw new Error('El proxy no devolvió api_key.');
+        return data.api_key;
+    }
+    const directKey = (localStorage.getItem('soniox_api_key') || '').trim();
+    if (directKey) return directKey; // modo prueba: clave directa (menos seguro en GitHub Pages)
+    throw new Error('Configura la URL del proxy Soniox (o una API key) en Configuración.');
+}
+
+async function startSonioxRecording() {
+    let token;
+    try {
+        token = await getSonioxToken();
+    } catch (e) {
+        alert(e.message);
+        return;
+    }
+
+    try {
+        if (!sonioxStream) {
+            sonioxStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        const SAMPLE_RATE = 16000;
+        sonioxWs = new WebSocket('wss://stt-rt.soniox.com/transcribe-websocket');
+        sonioxWs.binaryType = 'arraybuffer';
+
+        sonioxWs.onopen = () => {
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            recordText.innerText = 'Detener Soniox (F2)';
+            statusText.innerText = 'Grabando (Soniox)...';
+            recordingPulse.classList.remove('hidden');
+
+            // Lo ya escrito se conserva; Soniox añade a partir de aquí.
+            sonioxBaseTranscript = transcriptionArea.value || finalTranscript || '';
+            sonioxSessionFinal = '';
+
+            // Configuración: DEBE ser el primer mensaje y de tipo texto.
+            sonioxWs.send(JSON.stringify({
+                api_key: token,
+                model: 'stt-rt-preview',
+                audio_format: 's16le',
+                num_channels: 1,
+                sample_rate: SAMPLE_RATE,
+                language_hints: ['es'],
+                enable_endpoint_detection: true,
+                context: {
+                    general: [{ key: 'domain', value: 'Radiología maxilofacial y dental (CBCT)' }],
+                    terms: buildDeepgramKeyterms()
+                }
+            }));
+
+            sonioxAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            sonioxSource = sonioxAudioContext.createMediaStreamSource(sonioxStream);
+            sonioxProcessor = sonioxAudioContext.createScriptProcessor(4096, 1, 1);
+            sonioxSource.connect(sonioxProcessor);
+            sonioxProcessor.connect(sonioxAudioContext.destination);
+
+            sonioxProcessor.onaudioprocess = (e) => {
+                if (!isRecording || !sonioxWs || sonioxWs.readyState !== WebSocket.OPEN) return;
+                sonioxWs.send(floatTo16BitPCM(e.inputBuffer.getChannelData(0)));
+            };
+        };
+
+        sonioxWs.onmessage = (message) => {
+            let data;
+            try { data = JSON.parse(message.data); } catch (_) { return; }
+            if (data.error_code) {
+                console.error('Soniox error:', data.error_code, data.error_message);
+                if (isRecording) { alert('Error de Soniox: ' + data.error_message); stopSonioxRecording(true); }
+                return;
+            }
+
+            const tokens = data.tokens || [];
+            let interim = '';
+            for (const tk of tokens) {
+                if (!tk.text) continue;
+                if (tk.is_final) sonioxSessionFinal += tk.text;   // token confirmado
+                else interim += tk.text;                          // hipótesis provisional
+            }
+
+            // Comprometido = texto previo (base) + corrección del acumulado final de Soniox.
+            const committed = applyCorrections(sonioxSessionFinal.trim());
+            const base = sonioxBaseTranscript;
+            const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
+            finalTranscript = base + (committed ? sep + committed : '');
+
+            // Vista previa: comprometido + interino (sin corregir aún).
+            const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
+            transcriptionArea.value = finalTranscript + (interim.trim() ? sepI + interim.trim() : '');
+            lastDictatedText = finalTranscript;
+            lastSystemText = finalTranscript;
+            localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+            transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+        };
+
+        sonioxWs.onerror = (err) => {
+            console.error('Soniox WebSocket error:', err);
+            if (isRecording) {
+                alert('Error de conexión con Soniox. Revisa el proxy/clave y tu saldo.');
+                stopSonioxRecording(true);
+            }
+        };
+
+        sonioxWs.onclose = (ev) => {
+            console.log('Soniox WebSocket cerrado.', ev.code, ev.reason || '');
+            if (isRecording) stopSonioxRecording(true);
+        };
+
+    } catch (e) {
+        console.error('No se pudo iniciar Soniox:', e);
+        alert('Error al acceder al micrófono o iniciar Soniox.');
+    }
+}
+
+function stopSonioxRecording(immediate = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    recordText.innerText = 'Iniciar Dictado (F2)';
+    statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando...';
+    recordingPulse.classList.add('hidden');
+
+    if (sonioxProcessor) { sonioxProcessor.disconnect(); sonioxProcessor = null; }
+    if (sonioxSource) { sonioxSource.disconnect(); sonioxSource = null; }
+    if (sonioxAudioContext && sonioxAudioContext.state !== 'closed') {
+        sonioxAudioContext.close(); sonioxAudioContext = null;
+    }
+
+    if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN) {
+        if (!immediate) {
+            // Frame vacío = fin de stream; Soniox envía 'finished' y cierra.
+            try { sonioxWs.send(new ArrayBuffer(0)); } catch (_) {}
+            setTimeout(() => { if (sonioxWs) sonioxWs.close(); statusText.innerText = 'Listo'; }, 1200);
+        } else {
+            sonioxWs.close(); statusText.innerText = 'Listo';
+        }
+    } else {
+        statusText.innerText = 'Listo';
+    }
+}
+
 recordBtn.addEventListener('click', toggleRecording);
 
 if (pauseBtn) {
@@ -1275,6 +1442,8 @@ const anthropicKeyInput = document.getElementById('anthropic-key-input');
 const zaiKeyInput = document.getElementById('zai-key-input');
 const deepgramProxyInput = document.getElementById('deepgram-proxy-input');
 const deepgramKeyInput = document.getElementById('deepgram-key-input');
+const sonioxProxyInput = document.getElementById('soniox-proxy-input');
+const sonioxKeyInput = document.getElementById('soniox-key-input');
 const formatterModelSelect = document.getElementById('formatter-model-select');
 
 // Cargar API Keys si existen
@@ -1294,6 +1463,10 @@ const savedDeepgramProxy = localStorage.getItem('deepgram_proxy_url');
 const savedDeepgramKey = localStorage.getItem('deepgram_api_key');
 if (savedDeepgramProxy && deepgramProxyInput) deepgramProxyInput.value = savedDeepgramProxy;
 if (savedDeepgramKey && deepgramKeyInput) deepgramKeyInput.value = savedDeepgramKey;
+const savedSonioxProxy = localStorage.getItem('soniox_proxy_url');
+const savedSonioxKey = localStorage.getItem('soniox_api_key');
+if (savedSonioxProxy && sonioxProxyInput) sonioxProxyInput.value = savedSonioxProxy;
+if (savedSonioxKey && sonioxKeyInput) sonioxKeyInput.value = savedSonioxKey;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 // Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
@@ -1329,6 +1502,8 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('zai_api_key', zaiKey);
     localStorage.setItem('deepgram_proxy_url', deepgramProxyInput ? deepgramProxyInput.value.trim() : '');
     localStorage.setItem('deepgram_api_key', deepgramKeyInput ? deepgramKeyInput.value.trim() : '');
+    localStorage.setItem('soniox_proxy_url', sonioxProxyInput ? sonioxProxyInput.value.trim() : '');
+    localStorage.setItem('soniox_api_key', sonioxKeyInput ? sonioxKeyInput.value.trim() : '');
     localStorage.setItem('formatter_model', formatterModel);
     actualizarBotonIA();
     
