@@ -1344,6 +1344,86 @@ function stopSonioxRecording(immediate = false) {
     }
 }
 
+// === SUBIR AUDIO PARA TRANSCRIBIR (Soniox async vía Worker proxy) =========
+// Botón dedicado: sube un archivo de audio; el Worker lo transcribe con la API
+// asíncrona de Soniox (server-side, sin exponer la key) y AGREGA el texto al
+// informe actual, igual que el dictado en vivo.
+const uploadAudioBtn = document.getElementById('upload-audio-btn');
+const audioFileInput = document.getElementById('audio-file-input');
+
+if (uploadAudioBtn && audioFileInput) {
+    uploadAudioBtn.addEventListener('click', () => {
+        if (isRecording) { alert('Detén el dictado antes de subir un audio.'); return; }
+        audioFileInput.click();
+    });
+    audioFileInput.addEventListener('change', async () => {
+        const file = audioFileInput.files && audioFileInput.files[0];
+        if (file) await transcribeUploadedAudio(file);
+        audioFileInput.value = ''; // permite volver a subir el mismo archivo
+    });
+}
+
+async function transcribeUploadedAudio(file) {
+    const proxyUrl = (localStorage.getItem('soniox_proxy_url') || '').trim();
+    if (!proxyUrl) {
+        alert('Configura la URL del proxy Soniox en Configuración para transcribir archivos.');
+        return;
+    }
+    if (file.size > 100 * 1024 * 1024) {
+        alert('El archivo supera 100 MB. Usa un audio más corto o comprimido.');
+        return;
+    }
+
+    const prevRecordText = recordText ? recordText.innerText : '';
+    if (uploadAudioBtn) uploadAudioBtn.disabled = true;
+    if (recordBtn) recordBtn.disabled = true;
+    if (statusText) statusText.innerText = 'Transcribiendo archivo (Soniox)...';
+    if (recordText) recordText.innerText = 'Transcribiendo archivo...';
+
+    try {
+        const form = new FormData();
+        form.append('file', file, file.name || 'audio');
+        form.append('language_hints', JSON.stringify(['es']));
+        form.append('context', JSON.stringify({
+            general: [{ key: 'domain', value: 'Radiología maxilofacial y dental (CBCT)' }],
+            terms: buildDeepgramKeyterms()
+        }));
+
+        const resp = await fetch(proxyUrl, { method: 'POST', body: form });
+        if (!resp.ok) {
+            let msg = 'El proxy respondió ' + resp.status;
+            try { const e = await resp.json(); if (e && e.error) msg = e.error + (e.detail ? ' — ' + e.detail : ''); } catch (_) {}
+            throw new Error(msg);
+        }
+
+        const data = await resp.json();
+        let text = (data.text || '').trim();
+        if (!text) { alert('No se obtuvo texto de la transcripción del archivo.'); return; }
+
+        text = applyCorrections(text);
+
+        const base = transcriptionArea.value || finalTranscript || '';
+        const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
+        if (base.length === 0 || base.endsWith('\n') || base.endsWith('. ')) {
+            text = text.charAt(0).toUpperCase() + text.slice(1);
+        }
+        finalTranscript = base + (text ? sep + text : '');
+        transcriptionArea.value = finalTranscript;
+        lastDictatedText = finalTranscript;
+        lastSystemText = finalTranscript;
+        localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+        transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+    } catch (err) {
+        console.error('Error transcribiendo archivo:', err);
+        alert('Error al transcribir el archivo: ' + err.message);
+    } finally {
+        if (uploadAudioBtn) uploadAudioBtn.disabled = false;
+        if (recordBtn) recordBtn.disabled = false;
+        if (statusText) statusText.innerText = 'Listo';
+        if (recordText) recordText.innerText = prevRecordText || 'Iniciar Dictado (F2)';
+    }
+}
+
 recordBtn.addEventListener('click', toggleRecording);
 
 if (pauseBtn) {

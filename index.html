@@ -31,6 +31,11 @@
                 <button id="pause-btn" class="btn secondary-btn hidden" title="Pausar / Reanudar (F3)" style="padding: 10px; display: flex; align-items: center; justify-content: center; width: 42px;">
                     <span class="icon"><i data-lucide="pause"></i></span>
                 </button>
+                <button id="upload-audio-btn" class="btn secondary-btn" title="Subir un audio para transcribir (Soniox)" style="padding: 10px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span class="icon"><i data-lucide="upload"></i></span>
+                    <span>Subir audio</span>
+                </button>
+                <input type="file" id="audio-file-input" accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg,.aac,.flac,.mp4,.aiff,.amr,.asf" style="display: none;">
                 <div class="engine-selector">
                     <select id="engine-select" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--glass-border); color: var(--text-primary); font-size: 0.9rem; padding: 10px 12px; border-radius: 8px; outline: none; cursor: pointer; height: 100%;">
                         <option value="native">🎙️ Motor: Navegador (Gratis)</option>
@@ -449,7 +454,7 @@
     <script src="templates.js"></script>
     <script src="prompt.js?v=5"></script>
     <script src="gmail-integration.js?v=1.3"></script>
-    <script src="main.js?v=17"></script>
+    <script src="main.js?v=18"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
