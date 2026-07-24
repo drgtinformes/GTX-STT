@@ -2482,6 +2482,7 @@ function updateTemplateUI() {
                 ${data.isDefault ? `<span style="font-size: 0.7rem; opacity: 0.6; margin-left: 5px;">${data.isModified ? '(Modificada)' : '(Protegida)'}</span>` : ''}
             </td>
             <td style="padding: 8px; text-align: center; display: flex; gap: 8px; justify-content: center;">
+                <button class="icon-btn download-template-btn" data-id="${id}" title="Descargar .docx" style="color: #34d399;"><i data-lucide="download"></i></button>
                 <button class="icon-btn rename-template-btn" data-id="${id}" title="Renombrar" style="color: #60a5fa;"><i data-lucide="edit-2"></i></button>
                 <button class="icon-btn update-file-btn" data-id="${id}" title="Actualizar Archivo" style="color: #a78bfa;"><i data-lucide="upload"></i></button>
                 ${data.isDefault ? 
@@ -2494,6 +2495,33 @@ function updateTemplateUI() {
     });
     
     lucide.createIcons();
+
+    // Eventos de Descargar
+    document.querySelectorAll('.download-template-btn').forEach(btn => {
+        btn.onclick = () => {
+            const id = btn.getAttribute('data-id');
+            const template = templateManager.getTemplate(id);
+            if (!template || !template.base64) {
+                alert('No se encontró el archivo de esta plantilla para descargar.');
+                return;
+            }
+            try {
+                const arrayBuffer = base64ToArrayBuffer(template.base64);
+                const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const safeName = (template.name || 'plantilla').replace(/[^a-z0-9áéíóúñ _-]/gi, '').trim() || 'plantilla';
+                a.download = `${safeName}.docx`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                alert('Error al descargar la plantilla: ' + err.message);
+            }
+        };
+    });
 
     // Eventos de Renombrar
     document.querySelectorAll('.rename-template-btn').forEach(btn => {
