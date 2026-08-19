@@ -1520,6 +1520,7 @@ clearBtn.addEventListener('click', () => {
 const openaiKeyInput = document.getElementById('openai-key-input');
 const anthropicKeyInput = document.getElementById('anthropic-key-input');
 const zaiKeyInput = document.getElementById('zai-key-input');
+const deepseekKeyInput = document.getElementById('deepseek-key-input');
 const deepgramProxyInput = document.getElementById('deepgram-proxy-input');
 const deepgramKeyInput = document.getElementById('deepgram-key-input');
 const sonioxProxyInput = document.getElementById('soniox-proxy-input');
@@ -1531,6 +1532,7 @@ const savedApiKey = localStorage.getItem('gemini_api_key');
 const savedOpenAIKey = localStorage.getItem('openai_api_key');
 const savedAnthropicKey = localStorage.getItem('anthropic_api_key');
 const savedZaiKey = localStorage.getItem('zai_api_key');
+const savedDeepseekKey = localStorage.getItem('deepseek_api_key');
 // Migración: el valor del selector pasó de 'claude-4.7-opus' a 'claude-opus-4-8' (mismo destino, nombre claro)
 if (localStorage.getItem('formatter_model') === 'claude-4.7-opus') localStorage.setItem('formatter_model', 'claude-opus-4-8');
 const savedFormatterModel = localStorage.getItem('formatter_model') || 'auto';
@@ -1539,6 +1541,7 @@ if (savedApiKey && apiKeyInput) apiKeyInput.value = savedApiKey;
 if (savedOpenAIKey && openaiKeyInput) openaiKeyInput.value = savedOpenAIKey;
 if (savedAnthropicKey && anthropicKeyInput) anthropicKeyInput.value = savedAnthropicKey;
 if (savedZaiKey && zaiKeyInput) zaiKeyInput.value = savedZaiKey;
+if (savedDeepseekKey && deepseekKeyInput) deepseekKeyInput.value = savedDeepseekKey;
 const savedDeepgramProxy = localStorage.getItem('deepgram_proxy_url');
 const savedDeepgramKey = localStorage.getItem('deepgram_api_key');
 if (savedDeepgramProxy && deepgramProxyInput) deepgramProxyInput.value = savedDeepgramProxy;
@@ -1553,7 +1556,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2' };
+    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek V4 Flash' };
     const nombre = NOMBRES_MODELO[fm] || (fm.startsWith('claude') ? 'Claude' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
@@ -1574,12 +1577,14 @@ saveKeyBtn.addEventListener('click', () => {
     const openaiKey = openaiKeyInput ? openaiKeyInput.value.trim() : '';
     const anthropicKey = anthropicKeyInput ? anthropicKeyInput.value.trim() : '';
     const zaiKey = zaiKeyInput ? zaiKeyInput.value.trim() : '';
+    const deepseekKey = deepseekKeyInput ? deepseekKeyInput.value.trim() : '';
     const formatterModel = formatterModelSelect ? formatterModelSelect.value : 'auto';
 
     localStorage.setItem('gemini_api_key', geminiKey);
     localStorage.setItem('openai_api_key', openaiKey);
     localStorage.setItem('anthropic_api_key', anthropicKey);
     localStorage.setItem('zai_api_key', zaiKey);
+    localStorage.setItem('deepseek_api_key', deepseekKey);
     localStorage.setItem('deepgram_proxy_url', deepgramProxyInput ? deepgramProxyInput.value.trim() : '');
     localStorage.setItem('deepgram_api_key', deepgramKeyInput ? deepgramKeyInput.value.trim() : '');
     localStorage.setItem('soniox_proxy_url', sonioxProxyInput ? sonioxProxyInput.value.trim() : '');
@@ -2017,6 +2022,101 @@ aiProcessBtn.addEventListener('click', async () => {
                 alert(`Error de red al conectar con OpenAI. Puede deberse a restricciones de CORS del navegador.\n\nSi persiste, procesa a través de un proxy/servidor local en lugar de llamar directo desde el navegador.`);
             } else {
                 alert(`Ocurrió un error con GPT-4o mini: ${error.message}`);
+            }
+        } finally {
+            aiProcessBtn.innerHTML = originalBtnText;
+            aiProcessBtn.disabled = false;
+        }
+        return;
+    }
+
+    // === Rama DeepSeek V4 Flash (endpoint compatible con OpenAI) ===
+    if (formatterModel === 'deepseek-v4-flash') {
+        const deepseekKey = localStorage.getItem('deepseek_api_key');
+        if (!deepseekKey) {
+            alert('Debes configurar tu API Key de DeepSeek primero haciendo clic en el icono de configuración (engranaje).');
+            configModal.classList.remove('hidden');
+            return;
+        }
+
+        const originalBtnText = aiProcessBtn.innerHTML;
+        aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Procesando...';
+        aiProcessBtn.disabled = true;
+
+        try {
+            let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+            if (Object.keys(correctionsDict).length > 0) {
+                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
+                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
+                for (const [wrong, right] of Object.entries(correctionsDict)) {
+                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
+                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
+                    }
+                }
+                systemPrompt += customRules;
+            }
+            const _hoy = new Date();
+            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+            systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+
+            const basePayload = {
+                model: "deepseek-v4-flash",
+                temperature: 0.2,
+                max_tokens: 4096,
+                stream: false,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }
+                ]
+            };
+
+            const enviarDeepSeek = (payload) => fetch('https://api.deepseek.com/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${deepseekKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            // thinking: disabled -> respuesta directa, más rápida y determinista para el formateo estricto.
+            let response = await enviarDeepSeek({ ...basePayload, thinking: { type: "disabled" } });
+            // Si esta versión de la API no acepta el parámetro "thinking", se reintenta sin él.
+            if (response.status === 400) {
+                response = await enviarDeepSeek(basePayload);
+            }
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const errDetail = (errData.error && errData.error.message) ? errData.error.message : `HTTP ${response.status}`;
+                throw new Error(errDetail);
+            }
+
+            const responseData = await response.json();
+            let resultRaw = (responseData.choices && responseData.choices[0] && responseData.choices[0].message) ? responseData.choices[0].message.content : '';
+            // Salvaguarda: si el modelo devolviera el razonamiento embebido, se elimina el bloque <think>...</think>.
+            if (resultRaw) resultRaw = resultRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            if (resultRaw && resultRaw.trim()) {
+                let resultText = resultRaw;
+                resultText = adjustHeadersForSetTotal(resultText);
+                resultText = ensureCBCTParams(resultText, textToProcess);
+                resultText = normalizarSaltos(resultText);
+                transcriptionArea.value = resultText;
+                finalTranscript = resultText;
+                lastSystemText = resultText;
+                saveToHistory(resultText);
+                avisarDientesOmitidos(textToProcess, resultText);
+                incrementarContadorInformes();
+            } else {
+                throw new Error("DeepSeek (V4 Flash) no devolvió ningún contenido.");
+            }
+        } catch (error) {
+            console.error("Error al procesar con DeepSeek V4 Flash:", error);
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('CORS')) {
+                alert(`Error de red al conectar con DeepSeek. Puede deberse a restricciones de CORS del navegador.\n\nSi persiste, procesa a través de un proxy/servidor local en lugar de llamar directo desde el navegador.`);
+            } else {
+                alert(`Ocurrió un error con DeepSeek V4 Flash: ${error.message}`);
             }
         } finally {
             aiProcessBtn.innerHTML = originalBtnText;

@@ -149,6 +149,11 @@
                         <p class="small-text"><a href="https://z.ai/manage-apikey/apikey-list" target="_blank" style="color: #38bdf8;">Consigue tu Z.AI API Key aquí</a>.</p>
                     </div>
                     <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="deepseek-key-input">DeepSeek API Key (Para DeepSeek V4 Flash):</label>
+                        <input type="password" id="deepseek-key-input" placeholder="sk-...">
+                        <p class="small-text"><a href="https://platform.deepseek.com/api_keys" target="_blank" style="color: #6366f1;">Consigue tu DeepSeek API Key aquí</a>.</p>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 15px;">
                         <label for="deepgram-proxy-input">URL del proxy Deepgram (recomendado · Cloudflare Worker):</label>
                         <input type="text" id="deepgram-proxy-input" placeholder="https://deepgram-token.tuusuario.workers.dev">
                         <p class="small-text" style="color: #f97316;">Emite tokens temporales sin exponer tu API key. Despliega <code>deepgram-token-worker.js</code> en Cloudflare.</p>
@@ -178,6 +183,7 @@
                             <option value="claude-haiku-4-5">Claude Haiku 4.5 (Anthropic)</option>
                             <option value="gpt-4o-mini">GPT-4o mini (OpenAI)</option>
                             <option value="glm-5.2">GLM-5.2 (Z.AI)</option>
+                            <option value="deepseek-v4-flash">DeepSeek V4 Flash (DeepSeek)</option>
                         </select>
                     </div>
                     <p class="small-text" style="margin-top: 15px;">Tus claves se guardan localmente en tu navegador de forma segura.</p>
@@ -454,7 +460,7 @@
     <script src="templates.js"></script>
     <script src="prompt.js?v=5"></script>
     <script src="gmail-integration.js?v=1.3"></script>
-    <script src="main.js?v=19"></script>
+    <script src="main.js?v=20"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
