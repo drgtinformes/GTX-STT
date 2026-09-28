@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GTX Radiologia - STT</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=1.2">
+    <link rel="stylesheet" href="style.css?v=1.3">
     <script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -75,6 +75,15 @@
                     <span class="indicator-icon"><i data-lucide="sparkles"></i></span>
                     <span class="indicator-text">Inteligencia al día</span>
                 </div>
+            </div>
+
+            <div id="ai-changes-panel" class="ai-changes-panel hidden">
+                <div class="ai-changes-header">
+                    <span class="ai-changes-icon"><i data-lucide="list-checks"></i></span>
+                    <span id="ai-changes-title">Cambios realizados por la IA</span>
+                    <button id="ai-changes-close" class="ai-changes-close" title="Ocultar"><i data-lucide="x"></i></button>
+                </div>
+                <ul id="ai-changes-list" class="ai-changes-list"></ul>
             </div>
 
 
@@ -460,7 +469,7 @@
     <script src="templates.js"></script>
     <script src="prompt.js?v=5"></script>
     <script src="gmail-integration.js?v=1.3"></script>
-    <script src="main.js?v=20"></script>
+    <script src="main.js?v=21"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>

@@ -1019,3 +1019,62 @@ footer {
 }
 
 
+
+/* === Recuadro "Cambios realizados por la IA" === */
+.ai-changes-panel {
+    margin: -8px 0 24px;
+    background: rgba(168, 85, 247, 0.06);
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    border-radius: 12px;
+    padding: 12px 16px;
+}
+.ai-changes-panel.hidden { display: none; }
+.ai-changes-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #d8b4fe;
+    margin-bottom: 8px;
+}
+.ai-changes-header .ai-changes-icon svg { width: 18px; height: 18px; }
+#ai-changes-title { flex: 1; }
+.ai-changes-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    border-radius: 6px;
+}
+.ai-changes-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.08); }
+.ai-changes-close svg { width: 16px; height: 16px; }
+.ai-changes-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+.ai-changes-list li {
+    padding: 4px 0 4px 20px;
+    position: relative;
+    color: var(--text-primary);
+    border-top: 1px solid rgba(255,255,255,0.05);
+}
+.ai-changes-list li:first-child { border-top: none; }
+.ai-changes-list li::before {
+    position: absolute;
+    left: 2px;
+    content: "•";
+    color: #a855f7;
+}
+.ai-changes-list li.ai-change-alerta { color: #fcd34d; }
+.ai-changes-list li.ai-change-alerta::before { content: "⚠"; color: #fbbf24; left: 0; }
+.ai-changes-list li.ai-change-ok { color: #86efac; }
+.ai-changes-list li.ai-change-ok::before { content: "✓"; color: #4ade80; }
+.ai-changes-list li.ai-change-info { color: var(--text-secondary); font-style: italic; }

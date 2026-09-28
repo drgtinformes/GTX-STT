@@ -1513,6 +1513,7 @@ clearBtn.addEventListener('click', () => {
         finalTranscript = '';
         lastSystemText = '';
         localStorage.removeItem(AUTOSAVE_KEY);
+        ocultarPanelCambios();
     }
 });
 
@@ -1833,6 +1834,7 @@ aiProcessBtn.addEventListener('click', async () => {
         alert('No hay texto para procesar. Por favor dicta algo primero.');
         return;
     }
+    ocultarPanelCambios(); // el recuadro de cambios anterior ya no aplica
 
     if (formatterModel.startsWith('claude')) {
         const anthropicKey = localStorage.getItem('anthropic_api_key');
@@ -1866,6 +1868,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
                 const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
                 basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+                basePrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
                 return basePrompt;
             }
@@ -1917,6 +1920,8 @@ aiProcessBtn.addEventListener('click', async () => {
 
             if (responseData.content && responseData.content.length > 0 && responseData.content[0].text) {
                 let resultText = responseData.content[0].text;
+                const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+                resultText = _cambiosIA.informe;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
                 resultText = normalizarSaltos(resultText);
@@ -1927,6 +1932,7 @@ aiProcessBtn.addEventListener('click', async () => {
 
                 // Red de seguridad: avisar si la IA omitió algún diente del dictado
                 avisarDientesOmitidos(textToProcess, resultText);
+                mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
                 incrementarContadorInformes();
             } else {
                 throw new Error("No se pudo obtener respuesta de Claude.");
@@ -1974,6 +1980,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
             const payload = {
                 model: "gpt-4o-mini",
@@ -2004,6 +2011,8 @@ aiProcessBtn.addEventListener('click', async () => {
             const resultRaw = (responseData.choices && responseData.choices[0] && responseData.choices[0].message) ? responseData.choices[0].message.content : '';
             if (resultRaw && resultRaw.trim()) {
                 let resultText = resultRaw;
+                const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+                resultText = _cambiosIA.informe;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
                 resultText = normalizarSaltos(resultText);
@@ -2012,6 +2021,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 lastSystemText = resultText;
                 saveToHistory(resultText);
                 avisarDientesOmitidos(textToProcess, resultText);
+                mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
                 incrementarContadorInformes();
             } else {
                 throw new Error("OpenAI (GPT-4o mini) no devolvió ningún contenido.");
@@ -2059,6 +2069,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
             const basePayload = {
                 model: "deepseek-v4-flash",
@@ -2099,6 +2110,8 @@ aiProcessBtn.addEventListener('click', async () => {
             if (resultRaw) resultRaw = resultRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
             if (resultRaw && resultRaw.trim()) {
                 let resultText = resultRaw;
+                const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+                resultText = _cambiosIA.informe;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
                 resultText = normalizarSaltos(resultText);
@@ -2107,6 +2120,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 lastSystemText = resultText;
                 saveToHistory(resultText);
                 avisarDientesOmitidos(textToProcess, resultText);
+                mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
                 incrementarContadorInformes();
             } else {
                 throw new Error("DeepSeek (V4 Flash) no devolvió ningún contenido.");
@@ -2154,6 +2168,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
             // thinking: disabled -> respuesta directa, más rápida y determinista para el formateo estricto.
             const payload = {
@@ -2188,6 +2203,8 @@ aiProcessBtn.addEventListener('click', async () => {
             if (resultRaw) resultRaw = resultRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
             if (resultRaw && resultRaw.trim()) {
                 let resultText = resultRaw;
+                const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+                resultText = _cambiosIA.informe;
                 resultText = adjustHeadersForSetTotal(resultText);
                 resultText = ensureCBCTParams(resultText, textToProcess);
                 resultText = normalizarSaltos(resultText);
@@ -2196,6 +2213,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 lastSystemText = resultText;
                 saveToHistory(resultText);
                 avisarDientesOmitidos(textToProcess, resultText);
+                mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
                 incrementarContadorInformes();
             } else {
                 throw new Error("Z.AI (GLM-5.2) no devolvió ningún contenido.");
@@ -2311,6 +2329,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+            basePrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
             return basePrompt;
         }
@@ -2381,6 +2400,8 @@ aiProcessBtn.addEventListener('click', async () => {
 
         if (successResponse.candidates && successResponse.candidates.length > 0) {
             let resultText = successResponse.candidates[0].content.parts[0].text;
+            const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+            resultText = _cambiosIA.informe;
             resultText = adjustHeadersForSetTotal(resultText);
             resultText = ensureCBCTParams(resultText, textToProcess);
             transcriptionArea.value = resultText;
@@ -2392,6 +2413,7 @@ aiProcessBtn.addEventListener('click', async () => {
             
             // Red de seguridad: avisar si la IA omitió algún diente del dictado
             avisarDientesOmitidos(textToProcess, resultText);
+            mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
             incrementarContadorInformes();
 
         } else {
@@ -2430,6 +2452,7 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
     const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
     const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
     extra += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+    extra += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
     const _systemBlocks = [{ type: "text", text: basePrompt, cache_control: { type: "ephemeral", ttl: "1h" } }];
     if (extra.trim()) _systemBlocks.push({ type: "text", text: extra });
@@ -2458,6 +2481,8 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
     const data = await response.json();
     if (data.content && data.content.length > 0 && data.content[0].text) {
         let resultText = data.content[0].text;
+        const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
+        resultText = _cambiosIA.informe;
         resultText = adjustHeadersForSetTotal(resultText);
         resultText = ensureCBCTParams(resultText, textToProcess);
         resultText = normalizarSaltos(resultText);
@@ -2466,11 +2491,85 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
         lastSystemText = resultText;
         saveToHistory(resultText);
         avisarDientesOmitidos(textToProcess, resultText);
+        mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
         incrementarContadorInformes();
         return true;
     }
     return false;
 }
+
+// === Recuadro "Cambios realizados por la IA" ===
+// Se le pide al modelo que, DESPUÉS del informe, agregue un bloque entre
+// <<<CAMBIOS>>> y <<<FIN_CAMBIOS>>> enumerando lo que cambió respecto del dictado.
+// Ese bloque se separa del informe por código (nunca llega al textarea, al Word
+// ni al historial) y se muestra en el recuadro #ai-changes-panel.
+const INSTRUCCION_CAMBIOS = `
+
+### REGISTRO DE CAMBIOS (OBLIGATORIO — VA DESPUÉS DEL INFORME Y SE ELIMINA AUTOMÁTICAMENTE):
+Cuando termines el informe COMPLETO, agrega al final una línea que diga exactamente <<<CAMBIOS>>>, luego enumera cada modificación de CONTENIDO que hiciste respecto del dictado original (una por línea, cada línea empezando con "- "), y cierra con una línea que diga exactamente <<<FIN_CAMBIOS>>>.
+Registra: palabras o términos corregidos (formato: "dictado" → "escrito"), números de diente corregidos o reinterpretados, texto dictado que omitiste o no incluiste, texto que agregaste y que no estaba dictado, frases movidas a otra sección.
+NO registres: mayúsculas, puntuación, saltos de línea, encabezados/estructura de la plantilla, ni campos del encabezado completados con su valor por defecto (fecha actual, "Dr(a). Tratante", "Sin antecedentes entregados").
+Sé breve y concreto (máximo 25 líneas). Si no hubo cambios de contenido escribe solo "- Sin cambios de contenido".
+Este bloque NO es parte del informe: jamás lo mezcles dentro del texto del informe ni lo pongas antes de él.`;
+
+function extraerCambiosIA(texto) {
+    const res = { informe: texto || '', cambios: null };
+    if (!texto) return res;
+    const re = /<<<\s*CAMBIOS\s*>>>([\s\S]*?)(?:<<<\s*FIN_CAMBIOS\s*>>>|$)/i;
+    const m = texto.match(re);
+    if (!m) return res; // el modelo no devolvió el bloque: el informe queda igual
+    res.informe = texto.replace(re, '').replace(/<<<\s*FIN_CAMBIOS\s*>>>/gi, '').trim();
+    res.cambios = m[1]
+        .split(/\r?\n/)
+        .map(l => l.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, '').trim())
+        .filter(l => l && !/^`{3}/.test(l));
+    return res;
+}
+
+function ocultarPanelCambios() {
+    const panel = document.getElementById('ai-changes-panel');
+    if (panel) panel.classList.add('hidden');
+}
+
+function mostrarPanelCambios(cambios, dictado, informe) {
+    const panel = document.getElementById('ai-changes-panel');
+    const lista = document.getElementById('ai-changes-list');
+    const titulo = document.getElementById('ai-changes-title');
+    if (!panel || !lista) return;
+    try {
+        lista.innerHTML = '';
+        const items = [];
+
+        // 1) Verificación por código (no depende del modelo): dientes del dictado ausentes en el informe
+        const re = /\b[1-8]\.[1-8]\b/g;
+        const enInf = new Set((informe || '').match(re) || []);
+        const faltan = [...new Set((dictado || '').match(re) || [])].filter(d => !enInf.has(d)).sort();
+        if (faltan.length) items.push({ tipo: 'alerta', texto: 'Dientes dictados que NO aparecen en el informe: ' + faltan.join(', ') });
+
+        // 2) Lista que reporta la IA
+        if (cambios === null) {
+            items.push({ tipo: 'info', texto: 'El modelo no entregó la lista de cambios en este procesamiento.' });
+        } else {
+            const reales = cambios.filter(c => !/^sin cambios/i.test(c));
+            if (!reales.length) items.push({ tipo: 'ok', texto: 'Sin cambios de contenido respecto del dictado.' });
+            reales.forEach(c => items.push({ tipo: /omit|no incluid|elimin|agregu|añad|invent/i.test(c) ? 'alerta' : 'cambio', texto: c }));
+        }
+
+        items.forEach(it => {
+            const li = document.createElement('li');
+            li.className = 'ai-change-' + it.tipo;
+            li.textContent = it.texto; // textContent: nunca se interpreta como HTML
+            lista.appendChild(li);
+        });
+        const nCambios = items.filter(i => i.tipo === 'cambio' || i.tipo === 'alerta').length;
+        if (titulo) titulo.textContent = nCambios ? `Cambios realizados por la IA (${nCambios})` : 'Cambios realizados por la IA';
+        panel.classList.remove('hidden');
+    } catch (e) {
+        console.warn('No se pudo mostrar el recuadro de cambios:', e);
+    }
+}
+
+document.getElementById('ai-changes-close')?.addEventListener('click', ocultarPanelCambios);
 
 // === Lógica de Generación de Archivo Word (.docx) ===
 
