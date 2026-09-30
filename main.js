@@ -1075,12 +1075,30 @@ function floatTo16BitPCM(float32Array) {
     return buffer;
 }
 
+// Lee la URL de un proxy (Cloudflare Worker) desde Configuración y la normaliza:
+// sin "https://" el navegador la trataría como ruta relativa de GitHub Pages
+// (que responde 405 al POST), y un espacio o salto de línea pegado la rompe.
+function getProxyUrl(storageKey) {
+    let u = (localStorage.getItem(storageKey) || '').trim().replace(/\s+/g, '');
+    if (u && !/^https?:\/\//i.test(u)) u = 'https://' + u.replace(/^\/+/, '');
+    return u;
+}
+
+// Mensaje claro cuando el proxy falla: muestra a qué URL se llamó.
+function proxyError(nombre, resp, url) {
+    let pista = 'Revisa la URL y el secret.';
+    if (resp.status === 405 || resp.status === 404) pista = 'Esa URL no parece ser el Worker: ábrela en el navegador; debería mostrar un JSON.';
+    else if (resp.status === 500) pista = 'Revisa que el secret esté creado en el Worker.';
+    else if (resp.status === 502) pista = 'El Worker llegó al proveedor pero la API key fue rechazada.';
+    return new Error('El proxy ' + nombre + ' respondió ' + resp.status + ' (' + url + '). ' + pista);
+}
+
 // Token para conectar: 1) proxy (token efímero, seguro); 2) API key directa (solo pruebas).
 async function getDeepgramToken() {
-    const proxyUrl = (localStorage.getItem('deepgram_proxy_url') || '').trim();
+    const proxyUrl = getProxyUrl('deepgram_proxy_url');
     if (proxyUrl) {
         const resp = await fetch(proxyUrl, { method: 'POST' });
-        if (!resp.ok) throw new Error('El proxy Deepgram respondió ' + resp.status + '. Revisa la URL y el secret.');
+        if (!resp.ok) throw proxyError('Deepgram', resp, proxyUrl);
         const data = await resp.json();
         if (!data.access_token) throw new Error('El proxy no devolvió access_token.');
         return data.access_token;
@@ -1245,10 +1263,10 @@ let sonioxSessionFinal = '';
 
 // Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
 async function getSonioxToken() {
-    const proxyUrl = (localStorage.getItem('soniox_proxy_url') || '').trim();
+    const proxyUrl = getProxyUrl('soniox_proxy_url');
     if (proxyUrl) {
         const resp = await fetch(proxyUrl, { method: 'POST' });
-        if (!resp.ok) throw new Error('El proxy Soniox respondió ' + resp.status + '. Revisa la URL y el secret.');
+        if (!resp.ok) throw proxyError('Soniox', resp, proxyUrl);
         const data = await resp.json();
         if (!data.api_key) throw new Error('El proxy no devolvió api_key.');
         return data.api_key;
@@ -1414,10 +1432,10 @@ let smSessionFinal = '';
 let smStopTimer = null;
 
 async function getSpeechmaticsToken() {
-    const proxyUrl = (localStorage.getItem('speechmatics_proxy_url') || '').trim();
+    const proxyUrl = getProxyUrl('speechmatics_proxy_url');
     if (!proxyUrl) throw new Error('Configura la URL del proxy Speechmatics en Configuración (despliega speechmatics-token-worker.js en Cloudflare).');
     const resp = await fetch(proxyUrl, { method: 'POST' });
-    if (!resp.ok) throw new Error('El proxy Speechmatics respondió ' + resp.status + '. Revisa la URL y el secret.');
+    if (!resp.ok) throw proxyError('Speechmatics', resp, proxyUrl);
     const data = await resp.json();
     if (!data.jwt) throw new Error('El proxy no devolvió jwt.');
     return data.jwt;
@@ -1620,7 +1638,7 @@ if (uploadAudioBtn && audioFileInput) {
 }
 
 async function transcribeUploadedAudio(file) {
-    const proxyUrl = (localStorage.getItem('soniox_proxy_url') || '').trim();
+    const proxyUrl = getProxyUrl('soniox_proxy_url');
     if (!proxyUrl) {
         alert('Configura la URL del proxy Soniox en Configuración para transcribir archivos.');
         return;
