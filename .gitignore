@@ -23,3 +23,8 @@ eval/__pycache__/
 # Salidas del comparador de modelos (derivadas de informes reales — NO subir). El script sí se versiona.
 eval/resultados_*.jsonl
 eval/comparacion_modelos*
+
+# Comparador de motores de dictado: audios reales y sus salidas (NO subir). El script sí se versiona.
+eval/audios_stt/
+eval/stt_resultados/
+eval/comparacion_stt*

@@ -39,3 +39,18 @@ Mide de forma objetiva cuánto se parece la salida de la IA (usando el `SYSTEM_P
 ## Nota honesta sobre el método
 
 El "dictado simulado" se genera quitándole a cada informe real sus encabezados de sección y la línea de apertura, para que la IA tenga que reconstruir la estructura. Es una **aproximación**: tu dictado real incluye muletillas de voz y errores fonéticos que aquí no están. Aun así, es un buen termómetro **relativo** para comparar versiones del prompt entre sí. Para subir la fidelidad, se pueden ir reemplazando casos por transcripciones de dictados reales tuyos.
+
+---
+
+# Comparador de motores de dictado (`comparar_stt.py`)
+
+El evaluador de arriba mide el **formateo** (la IA). Este mide el paso anterior: **qué motor de voz transcribe mejor tu dictado**, con foco en términos clínicos y números de pieza FDI.
+
+1. Crea `eval/audios_stt/` y pon ahí ~10 dictados reales (wav/mp3/m4a/webm/ogg) con un `.txt` del mismo nombre que contenga lo que dijiste, bien escrito (no el informe formateado).
+2. Define las claves de los motores que quieras probar (los que no tengan clave se saltan):
+   - PowerShell: `$env:SONIOX_API_KEY="..."; $env:SPEECHMATICS_API_KEY="..."; $env:OPENAI_API_KEY="sk-..."; $env:DEEPGRAM_API_KEY="..."`
+3. Corre `python eval/comparar_stt.py` (o `--motores "soniox,speechmatics"`, `--n 3`, `--sin-terminos`, `--simular`).
+
+Resultado: `eval/comparacion_stt.md` ordenado por **error clínico** (menor = mejor), con % de piezas FDI acertadas, WER y los términos que más falla cada motor. Los audios y salidas quedan fuera de git.
+
+Opcional: `eval/terminos_clinicos.txt` (un término por línea) para medir y sugerir términos adicionales.

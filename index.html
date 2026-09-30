@@ -39,10 +39,11 @@
                 <div class="engine-selector">
                     <select id="engine-select" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--glass-border); color: var(--text-primary); font-size: 0.9rem; padding: 10px 12px; border-radius: 8px; outline: none; cursor: pointer; height: 100%;">
                         <option value="native">🎙️ Motor: Navegador (Gratis)</option>
-                        <option value="whisper">✨ Motor: Whisper (OpenAI)</option>
-                        <option value="realtime-whisper">⚡ Motor: Whisper Realtime (OpenAI)</option>
-                        <option value="deepgram">🩺 Motor: Deepgram Nova-3 (Español · Médico)</option>
-                        <option value="soniox">🌐 Motor: Soniox (Español · Multilingüe)</option>
+                        <option value="whisper">✨ Motor: GPT-Transcribe (OpenAI)</option>
+                        <option value="realtime-whisper">⚡ Motor: GPT Live Transcribe (OpenAI · Tiempo real)</option>
+                        <option value="deepgram">🎯 Motor: Deepgram Nova-3 (Español · Keyterms)</option>
+                        <option value="soniox">🌐 Motor: Soniox v5 (Español · Contexto)</option>
+                        <option value="speechmatics">🩺 Motor: Speechmatics Medical (Español)</option>
                     </select>
                 </div>
                 <div class="status-indicator">
@@ -177,6 +178,12 @@
                         <label for="soniox-key-input" style="margin-top: 8px; display: block;">Soniox API Key (opcional · solo para pruebas rápidas):</label>
                         <input type="password" id="soniox-key-input" placeholder="Solo si NO usas proxy (menos seguro)">
                         <p class="small-text"><a href="https://console.soniox.com/" target="_blank" style="color: #22d3ee;">Crea tu cuenta y API key de Soniox aquí</a>.</p>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="speechmatics-proxy-input">URL del proxy Speechmatics (obligatorio · Cloudflare Worker):</label>
+                        <input type="text" id="speechmatics-proxy-input" placeholder="https://speechmatics-token.tuusuario.workers.dev">
+                        <p class="small-text" style="color: #34d399;">Emite keys temporales sin exponer tu API key (Speechmatics no permite la key directa en el navegador). Despliega <code>speechmatics-token-worker.js</code> en Cloudflare.</p>
+                        <p class="small-text"><a href="https://portal.speechmatics.com/" target="_blank" style="color: #34d399;">Crea tu cuenta y API key de Speechmatics aquí</a>.</p>
                     </div>
                     <div class="input-group" style="margin-bottom: 15px;">
                         <label for="formatter-model-select">Modelo para Procesar con IA:</label>
@@ -469,7 +476,7 @@
     <script src="templates.js"></script>
     <script src="prompt.js?v=5"></script>
     <script src="gmail-integration.js?v=1.3"></script>
-    <script src="main.js?v=21"></script>
+    <script src="main.js?v=22"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>

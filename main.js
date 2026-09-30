@@ -606,6 +606,21 @@ let realtimeStartTime = null;
 let realtimeCostInterval = null;
 const engineSelect = document.getElementById('engine-select');
 
+// Contexto libre para los modelos OpenAI (gpt-transcribe / gpt-live-transcribe).
+// Los términos concretos ya no van aquí: se mandan aparte como `keywords`.
+function buildWhisperPrompt() {
+    return 'Dictado de un informe imagenológico de radiología maxilofacial y dental '
+        + '(panorámica, CBCT, periapical, bite-wing, telerradiografía, ATM) en español de Chile. '
+        + 'Notación dental FDI (ej. pieza 1.6, 3.8). Ejemplo: Pieza 1.6 restaurada. Caries distal. Periápices normales.';
+}
+
+// Keywords para OpenAI: mismos términos que Deepgram/Soniox, sin caracteres prohibidos (< > saltos de línea).
+function buildOpenAIKeywords() {
+    return buildDeepgramKeyterms()
+        .map(t => t.replace(/[<>\r\n]/g, ' ').trim())
+        .filter(Boolean);
+}
+
 async function startWhisperRecording() {
     try {
         if (!whisperStream) {
@@ -621,33 +636,16 @@ async function startWhisperRecording() {
         mediaRecorder.onstart = () => {
             isRecording = true;
             recordBtn.classList.add('recording');
-            recordText.innerText = 'Detener Dictado Whisper (F2)';
-            statusText.innerText = 'Grabando para Whisper...';
+            recordText.innerText = 'Detener GPT-Transcribe (F2)';
+            statusText.innerText = 'Grabando (GPT-Transcribe)...';
             recordingPulse.classList.remove('hidden');
         };
-
-// Función para armar el prompt dinámico de Whisper basándose en correcciones previas
-function buildWhisperPrompt() {
-    const basePrompt = 'Informes radiológicos dentales. Diente 1.6: Restaurado. Caries distal. Periápices normales.';
-    if (!correctionsDict) return basePrompt;
-    
-    // Obtener los términos correctos del diccionario (máximo 15 términos únicos para no exceder límites)
-    const customTerms = Object.values(correctionsDict)
-        .filter(term => typeof term === 'string' && term.length > 2 && !term.includes(' '))
-        .slice(-15)
-        .join(', ');
-        
-    if (customTerms) {
-        return `${basePrompt} Términos y nombres específicos a transcribir correctamente: ${customTerms}.`;
-    }
-    return basePrompt;
-}
 
         mediaRecorder.onstop = async () => {
             isRecording = false;
             recordBtn.classList.remove('recording');
             recordText.innerText = 'Transcribiendo...';
-            statusText.innerText = 'Procesando con Whisper...';
+            statusText.innerText = 'Procesando con GPT-Transcribe...';
             recordingPulse.classList.add('hidden');
             
             const openaiKey = localStorage.getItem('openai_api_key');
@@ -659,24 +657,44 @@ function buildWhisperPrompt() {
             }
 
             const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            const formData = new FormData();
-            // Whisper espera .webm, .mp3, .wav, etc. Le daremos un nombre falso
-            formData.append('file', audioBlob, 'audio.webm');
-            formData.append('model', 'whisper-1');
-            formData.append('language', 'es'); // Recomendado para mayor velocidad/precisión
-            formData.append('prompt', buildWhisperPrompt()); // Guía de estilo dinámica para puntuación e IA acústica
+
+            // gpt-transcribe (reemplaza a whisper-1): acepta contexto libre (prompt)
+            // + lista de términos literales (keywords) para el vocabulario clínico.
+            const buildForm = (model, withKeywords) => {
+                const fd = new FormData();
+                fd.append('file', audioBlob, 'audio.webm');
+                fd.append('model', model);
+                fd.append('language', 'es');
+                fd.append('response_format', 'json');
+                fd.append('prompt', buildWhisperPrompt());
+                if (withKeywords) buildOpenAIKeywords().forEach(k => fd.append('keywords[]', k));
+                return fd;
+            };
+            const sendTranscription = (fd) => fetch('https://api.openai.com/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${openaiKey}` },
+                body: fd
+            });
 
             try {
-                const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${openaiKey}`
-                    },
-                    body: formData
-                });
+                let response = await sendTranscription(buildForm('gpt-transcribe', true));
+
+                // Red de seguridad: si la API rechaza las keywords, reintenta sin ellas;
+                // si la cuenta aún no tiene gpt-transcribe, cae a gpt-4o-transcribe.
+                if (response.status === 400 || response.status === 404) {
+                    const errData = await response.clone().json().catch(() => ({}));
+                    const msg = (errData.error && errData.error.message) || '';
+                    if (/keyword/i.test(msg)) {
+                        console.warn('gpt-transcribe rechazó keywords; reintento sin ellas:', msg);
+                        response = await sendTranscription(buildForm('gpt-transcribe', false));
+                    } else if (/model/i.test(msg)) {
+                        console.warn('gpt-transcribe no disponible; uso gpt-4o-transcribe:', msg);
+                        response = await sendTranscription(buildForm('gpt-4o-transcribe', false));
+                    }
+                }
 
                 if (!response.ok) {
-                    const errData = await response.json();
+                    const errData = await response.json().catch(() => ({}));
                     throw new Error(errData.error?.message || 'Error en la API de OpenAI');
                 }
 
@@ -702,8 +720,8 @@ function buildWhisperPrompt() {
                     transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
                 }
             } catch (error) {
-                console.error("Error en Whisper:", error);
-                alert("Error con Whisper: " + error.message);
+                console.error("Error en GPT-Transcribe:", error);
+                alert("Error con GPT-Transcribe: " + error.message);
             } finally {
                 recordText.innerText = 'Iniciar Dictado (F2)';
                 statusText.innerText = 'Listo';
@@ -722,6 +740,7 @@ function toggleRecording() {
     const isRealtimeWhisper = engineSelect && engineSelect.value === 'realtime-whisper';
     const isDeepgram = engineSelect && engineSelect.value === 'deepgram';
     const isSoniox = engineSelect && engineSelect.value === 'soniox';
+    const isSpeechmatics = engineSelect && engineSelect.value === 'speechmatics';
 
     if (isRecording) {
         if (isWhisper && mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -732,7 +751,9 @@ function toggleRecording() {
             stopDeepgramRecording();
         } else if (isSoniox) {
             stopSonioxRecording();
-        } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram && !isSoniox) {
+        } else if (isSpeechmatics) {
+            stopSpeechmaticsRecording();
+        } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram && !isSoniox && !isSpeechmatics) {
             isRecording = false;
             recognition.stop();
         }
@@ -756,6 +777,8 @@ function toggleRecording() {
             startDeepgramRecording();
         } else if (isSoniox) {
             startSonioxRecording();
+        } else if (isSpeechmatics) {
+            startSpeechmaticsRecording();
         } else {
             try {
                 recognition.start();
@@ -766,7 +789,11 @@ function toggleRecording() {
     }
 }
 
-// Funciones para Realtime Whisper
+// Funciones para el motor OpenAI en tiempo real (gpt-live-transcribe).
+// El value del selector sigue siendo 'realtime-whisper' para no romper la preferencia guardada.
+const OPENAI_LIVE_DELAY = 'medium';
+let liveSessionFallbackUsed = false;
+
 function base64EncodeAudio(float32Array) {
     const arrayBuffer = new ArrayBuffer(float32Array.length * 2);
     const view = new DataView(arrayBuffer);
@@ -781,6 +808,30 @@ function base64EncodeAudio(float32Array) {
         binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
     }
     return btoa(binary);
+}
+
+// Configuración de sesión. full=false es la versión mínima de respaldo (sin
+// prompt/keywords/delay) por si la API rechazara alguno de esos campos.
+function buildLiveTranscribeSession(full) {
+    const transcription = full
+        ? { model: "gpt-live-transcribe", languages: ["es"], prompt: buildWhisperPrompt(), keywords: buildOpenAIKeywords(), delay: OPENAI_LIVE_DELAY }
+        : { model: "gpt-live-transcribe", language: "es" };
+    return {
+        type: "session.update",
+        session: {
+            type: "transcription",
+            audio: {
+                input: {
+                    format: { type: "audio/pcm", rate: 24000 },
+                    // gpt-live-transcribe reemplaza a gpt-realtime-whisper (legado).
+                    transcription,
+                    // Este modelo no acepta VAD del servidor: los turnos los cierra
+                    // nuestro detector de silencios local (commit manual).
+                    turn_detection: null
+                }
+            }
+        }
+    };
 }
 
 async function startRealtimeWhisperRecording() {
@@ -805,10 +856,11 @@ async function startRealtimeWhisperRecording() {
             console.log("WebSocket Realtime conectado.");
             isRecording = true;
             recordBtn.classList.add('recording');
-            recordText.innerText = 'Detener Whisper Realtime (F2)';
+            recordText.innerText = 'Detener GPT Live (F2)';
             statusText.innerText = 'Grabando (Tiempo Real)...';
             recordingPulse.classList.remove('hidden');
             currentRealtimeDraft = "";
+            liveSessionFallbackUsed = false;
 
             // --- INICIAR TIMER Y COSTO REALTIME ---
             realtimeStartTime = Date.now();
@@ -821,24 +873,7 @@ async function startRealtimeWhisperRecording() {
                 }, 500);
             }
 
-            realtimeWs.send(JSON.stringify({
-                type: "session.update",
-                session: {
-                    type: "transcription",
-                    audio: {
-                        input: {
-                            format: {
-                                type: "audio/pcm",
-                                rate: 24000
-                            },
-                            transcription: {
-                                model: "gpt-realtime-whisper",
-                                language: "es"
-                            }
-                        }
-                    }
-                }
-            }));
+            realtimeWs.send(JSON.stringify(buildLiveTranscribeSession(true)));
 
             audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
             const source = audioContext.createMediaStreamSource(realtimeStream);
@@ -910,6 +945,15 @@ async function startRealtimeWhisperRecording() {
                 }
             } else if (event.type === "error") {
                 console.error("Error Realtime API:", event.error);
+                const errMsg = (event.error && (event.error.message || event.error.param)) || '';
+                // Si rechaza un campo opcional de la sesión, reintenta con la config mínima (una vez).
+                if (!liveSessionFallbackUsed && /keyword|delay|languages|prompt/i.test(errMsg)
+                    && realtimeWs && realtimeWs.readyState === WebSocket.OPEN) {
+                    liveSessionFallbackUsed = true;
+                    console.warn('gpt-live-transcribe rechazó un campo; uso configuración mínima.');
+                    realtimeWs.send(JSON.stringify(buildLiveTranscribeSession(false)));
+                    return;
+                }
                 if (isRecording) {
                     alert("Error de OpenAI: " + event.error.message);
                     stopRealtimeWhisperRecording(true);
@@ -917,14 +961,17 @@ async function startRealtimeWhisperRecording() {
             }
         };
 
+        // Solo este socket puede detener la sesión (evita que un cierre tardío
+        // de una sesión anterior corte un dictado nuevo).
+        const thisWs = realtimeWs;
         realtimeWs.onerror = (err) => {
             console.error("WebSocket Error:", err);
-            if (isRecording) stopRealtimeWhisperRecording(true);
+            if (isRecording && realtimeWs === thisWs) stopRealtimeWhisperRecording(true);
         };
 
         realtimeWs.onclose = () => {
             console.log("WebSocket Realtime cerrado.");
-            if (isRecording) stopRealtimeWhisperRecording(true);
+            if (isRecording && realtimeWs === thisWs) stopRealtimeWhisperRecording(true);
         };
 
     } catch (e) {
@@ -965,10 +1012,11 @@ function stopRealtimeWhisperRecording(immediate = false) {
     if (realtimeWs && realtimeWs.readyState === WebSocket.OPEN) {
         if (!immediate) {
             realtimeWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            const wsToClose = realtimeWs;
             setTimeout(() => {
-                if(realtimeWs) realtimeWs.close();
+                if (wsToClose) wsToClose.close();
                 statusText.innerText = 'Listo';
-            }, 1500); // Esperar un poco a que llegue el último .completed
+            }, 3000); // Esperar a que llegue el último .completed (gpt-live-transcribe con delay 'medium' tarda ~1-2 s)
         } else {
             realtimeWs.close();
             statusText.innerText = 'Listo';
@@ -1242,7 +1290,9 @@ async function startSonioxRecording() {
             // Configuración: DEBE ser el primer mensaje y de tipo texto.
             sonioxWs.send(JSON.stringify({
                 api_key: token,
-                model: 'stt-rt-preview',
+                // v5 (jun-2026): mejor uso del contexto (términos de dominio).
+                // 'stt-rt-preview' fue retirado y solo funcionaba como alias.
+                model: 'stt-rt-v5',
                 audio_format: 's16le',
                 num_channels: 1,
                 sample_rate: SAMPLE_RATE,
@@ -1338,6 +1388,212 @@ function stopSonioxRecording(immediate = false) {
             setTimeout(() => { if (sonioxWs) sonioxWs.close(); statusText.innerText = 'Listo'; }, 1200);
         } else {
             sonioxWs.close(); statusText.innerText = 'Listo';
+        }
+    } else {
+        statusText.innerText = 'Listo';
+    }
+}
+
+// =========================================================================
+// === MOTOR SPEECHMATICS (Enhanced Medical · Español, tiempo real) ========
+// =========================================================================
+// Único proveedor con modelo MÉDICO en español en tiempo real (domain: medical).
+// Auth en navegador: key temporal (JWT) en la URL (?jwt=...), emitida por
+// speechmatics-token-worker.js. Reutiliza floatTo16BitPCM() y buildDeepgramKeyterms().
+const SPEECHMATICS_WS_URL = 'wss://eu.rt.speechmatics.com/v2';
+let smWs = null;
+let smAudioContext = null;
+let smProcessor = null;
+let smStream = null;
+let smSource = null;
+let smSeqNo = 0;
+let smStarted = false;       // true tras 'RecognitionStarted'
+let smPendingAudio = [];     // audio captado antes de que el servidor esté listo
+let smBaseTranscript = '';
+let smSessionFinal = '';
+let smStopTimer = null;
+
+async function getSpeechmaticsToken() {
+    const proxyUrl = (localStorage.getItem('speechmatics_proxy_url') || '').trim();
+    if (!proxyUrl) throw new Error('Configura la URL del proxy Speechmatics en Configuración (despliega speechmatics-token-worker.js en Cloudflare).');
+    const resp = await fetch(proxyUrl, { method: 'POST' });
+    if (!resp.ok) throw new Error('El proxy Speechmatics respondió ' + resp.status + '. Revisa la URL y el secret.');
+    const data = await resp.json();
+    if (!data.jwt) throw new Error('El proxy no devolvió jwt.');
+    return data.jwt;
+}
+
+// Diccionario propio (additional_vocab) a partir de los mismos términos que Deepgram/Soniox.
+function buildSpeechmaticsVocab() {
+    return buildDeepgramKeyterms().map(t => ({ content: t }));
+}
+
+async function startSpeechmaticsRecording(useVocab = true) {
+    let token;
+    try {
+        token = await getSpeechmaticsToken();
+    } catch (e) {
+        alert(e.message);
+        return;
+    }
+
+    try {
+        if (!smStream) {
+            smStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        const SAMPLE_RATE = 16000;
+        const ws = new WebSocket(SPEECHMATICS_WS_URL + '?jwt=' + encodeURIComponent(token));
+        smWs = ws;
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = () => {
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            recordText.innerText = 'Detener Speechmatics (F2)';
+            statusText.innerText = 'Conectando (Speechmatics Medical)...';
+            recordingPulse.classList.remove('hidden');
+
+            smBaseTranscript = transcriptionArea.value || finalTranscript || '';
+            smSessionFinal = '';
+            smSeqNo = 0;
+            smStarted = false;
+            smPendingAudio = [];
+
+            const transcriptionConfig = {
+                language: 'es',
+                domain: 'medical',            // modelo médico
+                operating_point: 'enhanced',  // el modelo médico es la variante Enhanced
+                enable_partials: true,
+                max_delay: 3                  // 0.7–4 s: más alto = final más preciso
+            };
+            if (useVocab) transcriptionConfig.additional_vocab = buildSpeechmaticsVocab();
+
+            ws.send(JSON.stringify({
+                message: 'StartRecognition',
+                audio_format: { type: 'raw', encoding: 'pcm_s16le', sample_rate: SAMPLE_RATE },
+                transcription_config: transcriptionConfig
+            }));
+
+            smAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            smSource = smAudioContext.createMediaStreamSource(smStream);
+            smProcessor = smAudioContext.createScriptProcessor(4096, 1, 1);
+            smSource.connect(smProcessor);
+            smProcessor.connect(smAudioContext.destination);
+
+            smProcessor.onaudioprocess = (e) => {
+                if (!isRecording || smWs !== ws || ws.readyState !== WebSocket.OPEN) return;
+                const pcm = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+                if (!smStarted) { smPendingAudio.push(pcm); return; } // se envía al confirmar el inicio
+                ws.send(pcm);
+                smSeqNo++;
+            };
+        };
+
+        ws.onmessage = (message) => {
+            let data;
+            try { data = JSON.parse(message.data); } catch (_) { return; }
+
+            switch (data.message) {
+                case 'RecognitionStarted':
+                    smStarted = true;
+                    statusText.innerText = 'Grabando (Speechmatics Medical)...';
+                    smPendingAudio.forEach(buf => { ws.send(buf); smSeqNo++; });
+                    smPendingAudio = [];
+                    return;
+
+                case 'AddPartialTranscript':
+                case 'AddTranscript': {
+                    const text = (data.metadata && data.metadata.transcript) || '';
+                    if (data.message === 'AddTranscript') smSessionFinal += text;
+
+                    const committed = applyCorrections(smSessionFinal.trim());
+                    const base = smBaseTranscript;
+                    const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
+                    finalTranscript = base + (committed ? sep + committed : '');
+
+                    const interim = data.message === 'AddPartialTranscript' ? text.trim() : '';
+                    const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
+                    transcriptionArea.value = finalTranscript + (interim ? sepI + interim : '');
+                    lastDictatedText = finalTranscript;
+                    lastSystemText = finalTranscript;
+                    localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+                    transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+                    return;
+                }
+
+                case 'EndOfTranscript':
+                    if (smStopTimer) { clearTimeout(smStopTimer); smStopTimer = null; }
+                    try { ws.close(); } catch (_) {}
+                    statusText.innerText = 'Listo';
+                    return;
+
+                case 'Warning':
+                    console.warn('Speechmatics warning:', data.type, data.reason);
+                    return;
+
+                case 'Error': {
+                    console.error('Speechmatics error:', data.type, data.reason);
+                    // Si el diccionario propio no fuera compatible con el modelo médico,
+                    // reintenta una vez sin él (antes de haber empezado a transcribir).
+                    if (useVocab && !smStarted && smWs === ws) {
+                        console.warn('Speechmatics: reintento sin additional_vocab.');
+                        ws.onclose = null;
+                        stopSpeechmaticsRecording(true);
+                        startSpeechmaticsRecording(false);
+                        return;
+                    }
+                    if (isRecording && smWs === ws) {
+                        alert('Error de Speechmatics: ' + (data.reason || data.type));
+                        stopSpeechmaticsRecording(true);
+                    }
+                    return;
+                }
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.error('Speechmatics WebSocket error:', err);
+            if (isRecording && smWs === ws) {
+                alert('Error de conexión con Speechmatics. Revisa el proxy y tu saldo.');
+                stopSpeechmaticsRecording(true);
+            }
+        };
+
+        ws.onclose = (ev) => {
+            console.log('Speechmatics WebSocket cerrado.', ev.code, ev.reason || '');
+            if (isRecording && smWs === ws) stopSpeechmaticsRecording(true);
+        };
+
+    } catch (e) {
+        console.error('No se pudo iniciar Speechmatics:', e);
+        alert('Error al acceder al micrófono o iniciar Speechmatics.');
+    }
+}
+
+function stopSpeechmaticsRecording(immediate = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    recordText.innerText = 'Iniciar Dictado (F2)';
+    statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando...';
+    recordingPulse.classList.add('hidden');
+
+    if (smProcessor) { smProcessor.disconnect(); smProcessor = null; }
+    if (smSource) { smSource.disconnect(); smSource = null; }
+    if (smAudioContext && smAudioContext.state !== 'closed') {
+        smAudioContext.close(); smAudioContext = null;
+    }
+
+    const ws = smWs;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        if (!immediate && smStarted) {
+            // EndOfStream: Speechmatics entrega lo pendiente y responde 'EndOfTranscript'.
+            try { ws.send(JSON.stringify({ message: 'EndOfStream', last_seq_no: smSeqNo })); } catch (_) {}
+            if (smStopTimer) clearTimeout(smStopTimer);
+            smStopTimer = setTimeout(() => { try { ws.close(); } catch (_) {} statusText.innerText = 'Listo'; }, 5000);
+        } else {
+            ws.close(); statusText.innerText = 'Listo';
         }
     } else {
         statusText.innerText = 'Listo';
@@ -1526,6 +1782,7 @@ const deepgramProxyInput = document.getElementById('deepgram-proxy-input');
 const deepgramKeyInput = document.getElementById('deepgram-key-input');
 const sonioxProxyInput = document.getElementById('soniox-proxy-input');
 const sonioxKeyInput = document.getElementById('soniox-key-input');
+const speechmaticsProxyInput = document.getElementById('speechmatics-proxy-input');
 const formatterModelSelect = document.getElementById('formatter-model-select');
 
 // Cargar API Keys si existen
@@ -1551,6 +1808,8 @@ const savedSonioxProxy = localStorage.getItem('soniox_proxy_url');
 const savedSonioxKey = localStorage.getItem('soniox_api_key');
 if (savedSonioxProxy && sonioxProxyInput) sonioxProxyInput.value = savedSonioxProxy;
 if (savedSonioxKey && sonioxKeyInput) sonioxKeyInput.value = savedSonioxKey;
+const savedSpeechmaticsProxy = localStorage.getItem('speechmatics_proxy_url');
+if (savedSpeechmaticsProxy && speechmaticsProxyInput) speechmaticsProxyInput.value = savedSpeechmaticsProxy;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 // Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
@@ -1590,6 +1849,7 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('deepgram_api_key', deepgramKeyInput ? deepgramKeyInput.value.trim() : '');
     localStorage.setItem('soniox_proxy_url', sonioxProxyInput ? sonioxProxyInput.value.trim() : '');
     localStorage.setItem('soniox_api_key', sonioxKeyInput ? sonioxKeyInput.value.trim() : '');
+    localStorage.setItem('speechmatics_proxy_url', speechmaticsProxyInput ? speechmaticsProxyInput.value.trim() : '');
     localStorage.setItem('formatter_model', formatterModel);
     actualizarBotonIA();
     
