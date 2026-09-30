@@ -1084,6 +1084,16 @@ function getProxyUrl(storageKey) {
     return u;
 }
 
+// Si en el campo del proxy se pegó otra cosa (típicamente la API key), avisa claro.
+function assertProxyUrl(nombre, u) {
+    const host = u.replace(/^https?:\/\//i, '').split('/')[0];
+    if (!host.includes('.')) {
+        throw new Error('La "URL del proxy ' + nombre + '" no es una dirección web (parece una API key). '
+            + 'Ahí va la URL del Worker, ej. https://' + nombre.toLowerCase() + '-token.tuusuario.workers.dev. '
+            + 'La API key va como secret DENTRO del Worker en Cloudflare, no en la app.');
+    }
+}
+
 // Mensaje claro cuando el proxy falla: muestra a qué URL se llamó.
 function proxyError(nombre, resp, url) {
     let pista = 'Revisa la URL y el secret.';
@@ -1097,6 +1107,7 @@ function proxyError(nombre, resp, url) {
 async function getDeepgramToken() {
     const proxyUrl = getProxyUrl('deepgram_proxy_url');
     if (proxyUrl) {
+        assertProxyUrl('Deepgram', proxyUrl);
         const resp = await fetch(proxyUrl, { method: 'POST' });
         if (!resp.ok) throw proxyError('Deepgram', resp, proxyUrl);
         const data = await resp.json();
@@ -1265,6 +1276,7 @@ let sonioxSessionFinal = '';
 async function getSonioxToken() {
     const proxyUrl = getProxyUrl('soniox_proxy_url');
     if (proxyUrl) {
+        assertProxyUrl('Soniox', proxyUrl);
         const resp = await fetch(proxyUrl, { method: 'POST' });
         if (!resp.ok) throw proxyError('Soniox', resp, proxyUrl);
         const data = await resp.json();
@@ -1434,6 +1446,7 @@ let smStopTimer = null;
 async function getSpeechmaticsToken() {
     const proxyUrl = getProxyUrl('speechmatics_proxy_url');
     if (!proxyUrl) throw new Error('Configura la URL del proxy Speechmatics en Configuración (despliega speechmatics-token-worker.js en Cloudflare).');
+    assertProxyUrl('Speechmatics', proxyUrl);
     const resp = await fetch(proxyUrl, { method: 'POST' });
     if (!resp.ok) throw proxyError('Speechmatics', resp, proxyUrl);
     const data = await resp.json();
