@@ -1847,7 +1847,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek V4 Flash' };
+    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek Flash' };
     const nombre = NOMBRES_MODELO[fm] || (fm.startsWith('claude') ? 'Claude' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
@@ -2115,6 +2115,95 @@ closeHistoryBtn.addEventListener('click', () => {
 });
 
 
+// === DeepSeek: llamada en streaming con detección de cola y timeout ===
+// DeepSeek responde HTTP 200 al instante y, si el modelo está saturado, deja la petición EN COLA
+// enviando solo keep-alives (hasta 10 min) sin empezar a generar. Con una llamada normal (stream:false)
+// el botón quedaba en "Procesando..." indefinidamente. En streaming sabemos cuándo empieza la inferencia:
+// si no llega ningún dato real en `esperaInicioMs`, se corta con code 'DEEPSEEK_COLA'.
+async function llamarDeepSeek(model, messages, deepseekKey, { esperaInicioMs = 12000, esperaTotalMs = 120000 } = {}) {
+    const ctrl = new AbortController();
+    let motivo = null;
+    const tInicio = setTimeout(() => { motivo = 'cola'; ctrl.abort(); }, esperaInicioMs);
+    const tTotal = setTimeout(() => { if (!motivo) motivo = 'total'; ctrl.abort(); }, esperaTotalMs);
+    const enviar = (sinThinking) => fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${deepseekKey}`
+        },
+        body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            max_tokens: 4096,
+            stream: true,
+            messages,
+            // thinking: disabled -> respuesta directa, más rápida y determinista para el formateo estricto.
+            ...(sinThinking ? { thinking: { type: "disabled" } } : {})
+        }),
+        signal: ctrl.signal
+    });
+
+    try {
+        let response = await enviar(true);
+        // Si esta versión de la API no acepta el parámetro "thinking", se reintenta sin él.
+        if (response.status === 400) response = await enviar(false);
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            const errDetail = (errData.error && errData.error.message) ? errData.error.message : `HTTP ${response.status}`;
+            throw new Error(errDetail);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '', content = '', finishReason = null;
+
+        const procesarLinea = (linea) => {
+            if (!linea.startsWith('data:')) return; // líneas vacías y comentarios ": keep-alive" (petición en cola)
+            const dato = linea.slice(5).trim();
+            if (!dato || dato === '[DONE]') return;
+            clearTimeout(tInicio); // llegó un dato real: la inferencia ya empezó
+            let evento;
+            try { evento = JSON.parse(dato); } catch (_) { return; }
+            if (evento.error) throw new Error(evento.error.message || 'Error de DeepSeek durante la generación.');
+            const choice = evento.choices && evento.choices[0];
+            if (!choice) return;
+            // delta.reasoning_content (razonamiento) se ignora: solo interesa el informe.
+            if (choice.delta && typeof choice.delta.content === 'string') content += choice.delta.content;
+            if (choice.finish_reason) finishReason = choice.finish_reason;
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let corte;
+            while ((corte = buffer.indexOf('\n')) >= 0) {
+                const linea = buffer.slice(0, corte).trim();
+                buffer = buffer.slice(corte + 1);
+                procesarLinea(linea);
+            }
+        }
+        procesarLinea(buffer.trim());
+        return { content, finishReason };
+    } catch (e) {
+        if (motivo === 'cola') {
+            const err = new Error(`DeepSeek dejó la petición en cola (${model} saturado): no empezó a generar en ${Math.round(esperaInicioMs / 1000)} s.`);
+            err.code = 'DEEPSEEK_COLA';
+            throw err;
+        }
+        if (motivo === 'total') {
+            const err = new Error(`DeepSeek (${model}) tardó más de ${Math.round(esperaTotalMs / 1000)} s en completar la respuesta.`);
+            err.code = 'DEEPSEEK_TIMEOUT';
+            throw err;
+        }
+        throw e;
+    } finally {
+        clearTimeout(tInicio);
+        clearTimeout(tTotal);
+    }
+}
+
 // === Lógica de Procesamiento con IA (Google Gemini) ===
 aiProcessBtn.addEventListener('click', async () => {
     triggerCorrectionCheck(); // No bloqueante: el aprendizaje corre en 2º plano (ya se dispara en input/blur). El await previo retrasaba CADA procesado.
@@ -2331,7 +2420,7 @@ aiProcessBtn.addEventListener('click', async () => {
         return;
     }
 
-    // === Rama DeepSeek V4 Flash (endpoint compatible con OpenAI) ===
+    // === Rama DeepSeek Flash (endpoint compatible con OpenAI; fallback a V4 Pro si Flash está en cola) ===
     if (formatterModel === 'deepseek-v4-flash') {
         const deepseekKey = localStorage.getItem('deepseek_api_key');
         if (!deepseekKey) {
@@ -2362,41 +2451,27 @@ aiProcessBtn.addEventListener('click', async () => {
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
             systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
 
-            const basePayload = {
-                model: "deepseek-v4-flash",
-                temperature: 0.2,
-                max_tokens: 4096,
-                stream: false,
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }
-                ]
-            };
+            const mensajes = [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `DICTADO DEL USUARIO A FORMATEAR (Aplica tus reglas estrictamente, sin saludos ni formato markdown):\n\n${textToProcess}` }
+            ];
 
-            const enviarDeepSeek = (payload) => fetch('https://api.deepseek.com/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${deepseekKey}`
-                },
-                body: JSON.stringify(payload)
-            });
-
-            // thinking: disabled -> respuesta directa, más rápida y determinista para el formateo estricto.
-            let response = await enviarDeepSeek({ ...basePayload, thinking: { type: "disabled" } });
-            // Si esta versión de la API no acepta el parámetro "thinking", se reintenta sin él.
-            if (response.status === 400) {
-                response = await enviarDeepSeek(basePayload);
+            // "deepseek-flash" es el ID vigente (V4.1 Flash); "deepseek-v4-flash" quedó como alias temporal.
+            let resultRaw = '';
+            try {
+                ({ content: resultRaw } = await llamarDeepSeek('deepseek-flash', mensajes, deepseekKey));
+            } catch (errFlash) {
+                if (errFlash.code !== 'DEEPSEEK_COLA') throw errFlash;
+                // FALLBACK: Flash saturado (petición en cola) -> mismo informe con V4 Pro, misma API key.
+                console.info('[fallback] DeepSeek Flash en cola (saturado) -> procesando con DeepSeek V4 Pro.');
+                aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Flash saturado -> V4 Pro...';
+                try {
+                    ({ content: resultRaw } = await llamarDeepSeek('deepseek-v4-pro', mensajes, deepseekKey, { esperaInicioMs: 30000 }));
+                } catch (errPro) {
+                    if (errPro.code !== 'DEEPSEEK_COLA') throw errPro;
+                    throw new Error('DeepSeek está saturado en este momento (Flash y V4 Pro dejaron la petición en cola). Tu dictado sigue intacto: reintenta en unos minutos o elige otro modelo en Configuración (engranaje).');
+                }
             }
-
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                const errDetail = (errData.error && errData.error.message) ? errData.error.message : `HTTP ${response.status}`;
-                throw new Error(errDetail);
-            }
-
-            const responseData = await response.json();
-            let resultRaw = (responseData.choices && responseData.choices[0] && responseData.choices[0].message) ? responseData.choices[0].message.content : '';
             // Salvaguarda: si el modelo devolviera el razonamiento embebido, se elimina el bloque <think>...</think>.
             if (resultRaw) resultRaw = resultRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
             if (resultRaw && resultRaw.trim()) {
@@ -2414,14 +2489,14 @@ aiProcessBtn.addEventListener('click', async () => {
                 mostrarPanelCambios(_cambiosIA.cambios, textToProcess, resultText);
                 incrementarContadorInformes();
             } else {
-                throw new Error("DeepSeek (V4 Flash) no devolvió ningún contenido.");
+                throw new Error("DeepSeek no devolvió ningún contenido.");
             }
         } catch (error) {
-            console.error("Error al procesar con DeepSeek V4 Flash:", error);
+            console.error("Error al procesar con DeepSeek:", error);
             if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError') || error.message.includes('CORS')) {
                 alert(`Error de red al conectar con DeepSeek. Puede deberse a restricciones de CORS del navegador.\n\nSi persiste, procesa a través de un proxy/servidor local en lugar de llamar directo desde el navegador.`);
             } else {
-                alert(`Ocurrió un error con DeepSeek V4 Flash: ${error.message}`);
+                alert(`Ocurrió un error con DeepSeek: ${error.message}`);
             }
         } finally {
             aiProcessBtn.innerHTML = originalBtnText;
