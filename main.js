@@ -2248,7 +2248,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
                 const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
                 basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-                basePrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+                basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
                 return basePrompt;
             }
@@ -2360,7 +2360,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+            systemPrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
             const payload = {
                 model: "gpt-4o-mini",
@@ -2449,7 +2449,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+            systemPrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
             const mensajes = [
                 { role: "system", content: systemPrompt },
@@ -2534,7 +2534,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             systemPrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            systemPrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+            systemPrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
             // thinking: disabled -> respuesta directa, más rápida y determinista para el formateo estricto.
             const payload = {
@@ -2695,7 +2695,7 @@ aiProcessBtn.addEventListener('click', async () => {
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
             basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            basePrompt += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+            basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
             return basePrompt;
         }
@@ -2818,7 +2818,7 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
     const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
     const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
     extra += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-    extra += INSTRUCCION_CAMBIOS; // Registro de cambios (se extrae y muestra en el recuadro)
+    extra += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
 
     const _systemBlocks = [{ type: "text", text: basePrompt, cache_control: { type: "ephemeral", ttl: "1h" } }];
     if (extra.trim()) _systemBlocks.push({ type: "text", text: extra });
@@ -2873,10 +2873,52 @@ const INSTRUCCION_CAMBIOS = `
 
 ### REGISTRO DE CAMBIOS (OBLIGATORIO — VA DESPUÉS DEL INFORME Y SE ELIMINA AUTOMÁTICAMENTE):
 Cuando termines el informe COMPLETO, agrega al final una línea que diga exactamente <<<CAMBIOS>>>, luego enumera cada modificación de CONTENIDO que hiciste respecto del dictado original (una por línea, cada línea empezando con "- "), y cierra con una línea que diga exactamente <<<FIN_CAMBIOS>>>.
-Registra: palabras o términos corregidos (formato: "dictado" → "escrito"), números de diente corregidos o reinterpretados, texto dictado que omitiste o no incluiste, texto que agregaste y que no estaba dictado, frases movidas a otra sección.
+Registra: palabras o términos corregidos (formato: "dictado" → "escrito"), cualquier número de diente que haya quedado distinto al dictado (recuerda: está PROHIBIDO cambiar la nomenclatura dictada, p. ej. pasar "Diente 8" a "Diente 1.1"), texto dictado que omitiste o no incluiste, texto que agregaste y que no estaba dictado, frases movidas a otra sección.
 NO registres: mayúsculas, puntuación, saltos de línea, encabezados/estructura de la plantilla, ni campos del encabezado completados con su valor por defecto (fecha actual, "Dr(a). Tratante", "Sin antecedentes entregados").
 Sé breve y concreto (máximo 25 líneas). Si no hubo cambios de contenido escribe solo "- Sin cambios de contenido".
 Este bloque NO es parte del informe: jamás lo mezcles dentro del texto del informe ni lo pongas antes de él.`;
+
+// === Bloqueo de nomenclatura dental dictada ===
+// Algunos modelos, de vez en cuando, "traducen" los dientes dictados como enteros
+// (sistema Nacional/Universal 1-32: "diente 8") a FDI con punto ("1.1"). Aquí se detecta
+// por código en qué formato vienen los dientes del dictado para (1) recordárselo al
+// modelo con los números concretos y (2) avisar en el recuadro si igual los cambió.
+// Es conservador: ante cualquier señal de dientes dictados con punto, no hace nada.
+function detectarNomenclaturaDictado(dictado) {
+    const res = { enteros: [], soloEnteros: false };
+    const t = dictado || '';
+    if (!t) return res;
+    const num = '(?:\\d|un|uno|dos|tres|cuatro|cinco|seis|siete|ocho)';
+    const hayDecimal = /\b[1-8]\.[1-8]\b/.test(t)
+        || new RegExp('\\b' + num + '\\s+punto\\s+' + num + '\\b', 'i').test(t);
+    const ambiguo = /\b(?:dientes?|piezas?)\s+\d\s+\d\b/i.test(t); // "diente 1 6": no se sabe si es 16 o 1.6
+    const vistos = new Set();
+    const reLista = /\b(?:dientes?|piezas?)\s+(\d{1,2}(?:\s*(?:,|-|y|e|al)\s*\d{1,2})*)(?![\d.,]*\d)/gi;
+    let mm;
+    while ((mm = reLista.exec(t)) !== null) {
+        (mm[1].match(/\d{1,2}/g) || []).forEach(n => {
+            const v = parseInt(n, 10);
+            if (v >= 1 && v <= 85) vistos.add(String(v));
+        });
+    }
+    res.enteros = [...vistos];
+    res.soloEnteros = res.enteros.length > 0 && !hayDecimal && !ambiguo;
+    return res;
+}
+
+// Bloque dinámico para el prompt (va en la parte NO cacheada, junto a la fecha).
+function instruccionNomenclatura(dictado) {
+    try {
+        const d = detectarNomenclaturaDictado(dictado);
+        if (!d.soloEnteros) return '';
+        const lista = d.enteros.slice(0, 40).join(', ');
+        const ej = d.enteros[0];
+        return `\n\n### DATO DEL SISTEMA — NOMENCLATURA DENTAL DE ESTE DICTADO (PRIORIDAD MÁXIMA):\nEn este dictado los dientes vienen como números ENTEROS, sin punto decimal (detectados: ${lista}). Escríbelos en el informe EXACTAMENTE con esos mismos números (ej. "Diente ${ej}:"), incluido el TIPO DE ESTUDIO. Está TERMINANTEMENTE PROHIBIDO convertirlos, traducirlos o "reinterpretarlos" a FDI con punto (X.X): en este informe NO debe aparecer ningún diente escrito con formato X.X.`;
+    } catch (e) {
+        console.warn('No se pudo detectar la nomenclatura del dictado:', e);
+        return '';
+    }
+}
 
 function extraerCambiosIA(texto) {
     const res = { informe: texto || '', cambios: null };
@@ -2911,6 +2953,13 @@ function mostrarPanelCambios(cambios, dictado, informe) {
         const enInf = new Set((informe || '').match(re) || []);
         const faltan = [...new Set((dictado || '').match(re) || [])].filter(d => !enInf.has(d)).sort();
         if (faltan.length) items.push({ tipo: 'alerta', texto: 'Dientes dictados que NO aparecen en el informe: ' + faltan.join(', ') });
+
+        // 1b) Verificación por código: el dictado venía en números enteros y el informe trae dientes X.X
+        const nomen = detectarNomenclaturaDictado(dictado);
+        if (nomen.soloEnteros) {
+            const fdiEnInforme = [...enInf].sort();
+            if (fdiEnInforme.length) items.push({ tipo: 'alerta', texto: 'CAMBIO DE NOMENCLATURA: dictaste los dientes como números enteros (' + nomen.enteros.join(', ') + ') y el informe los trae en FDI con punto (' + fdiEnInforme.join(', ') + '). Corrígelos o vuelve a procesar el dictado.' });
+        }
 
         // 2) Lista que reporta la IA
         if (cambios === null) {
