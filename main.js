@@ -36,14 +36,12 @@ const defaultCorrectionsDict = {
     // === ENDODONCIA ===
     "endodoncia": "endodoncia",
     "tratamiento de conducto": "tratamiento de conducto",
-    "tratamiento de conductos": "tratamiento de conducto",
     "obturación del conducto": "obturación del conducto",
     "sobreobturación": "sobreobturación",
     "subobturación": "subobturación",
     
     // === PERIODONTITIS / PERIAPICAL ===
     "periodontitis apical": "periodontitis apical",
-    "periodontitis": "periodontitis apical",
     "lesión periapical": "lesión periapical",
     "granuloma periapical": "granuloma periapical",
     "absceso periapical": "absceso periapical",
@@ -54,7 +52,6 @@ const defaultCorrectionsDict = {
     
     // === IMPLANTES ===
     "implante": "implante",
-    "implantes": "implante",
     "oseointegración": "oseointegración",
     "pérdida ósea periimplantaria": "pérdida ósea periimplantaria",
     "mucosite": "mucosite",
@@ -163,6 +160,84 @@ if (savedDict) {
     } catch (e) {
         console.error("Error al leer el diccionario", e);
     }
+}
+
+// === Saneamiento del diccionario (oct-2026) ===
+// Entradas que venían en el diccionario por defecto y que se guardaron en localStorage
+// junto con el diccionario del usuario. Cambiaban el número gramatical o expandían texto:
+//   "implantes" -> "implante"  => "Control implante de oseointegración rehabilitados"
+//   "tratamiento de conductos" -> "...conducto" => la IA singularizaba "conductos" por parecido
+//   "periodontitis" -> "periodontitis apical" => "periodontitis apical apical"
+// Se eliminan del diccionario guardado SOLO si conservan ese valor exacto.
+const ENTRADAS_DICCIONARIO_RETIRADAS = {
+    "implantes": "implante",
+    "tratamiento de conductos": "tratamiento de conducto",
+    "periodontitis": "periodontitis apical"
+};
+(function sanearDiccionarioGuardado() {
+    let cambiado = false;
+    for (const [k, v] of Object.entries(ENTRADAS_DICCIONARIO_RETIRADAS)) {
+        if (correctionsDict[k] === v) { delete correctionsDict[k]; cambiado = true; }
+    }
+    if (cambiado && savedDict) {
+        try { localStorage.setItem('custom_dict', JSON.stringify(correctionsDict)); } catch (e) {}
+    }
+})();
+
+function _normDict(s) {
+    return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function _escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Una regla del diccionario es PELIGROSA (no se aplica ni se manda a la IA) si:
+//  - el origen es muy corto ("a", "y", "de"...): reemplazarlo rompe frases enteras;
+//  - solo cambia singular/plural ("implantes" -> "implante", "conductos" -> "conducto");
+//  - el destino contiene al origen ("periodontitis" -> "periodontitis apical"): se duplica.
+function esReglaDiccionarioSegura(wrong, right) {
+    const w = _normDict(wrong), r = _normDict(right);
+    if (!w || !r || w === r) return true;
+    if (w.replace(/\s/g, '').length < 3) return false;
+    const pw = w.split(' '), pr = r.split(' ');
+    if (pw.length === pr.length) {
+        const soloNumero = pw.every((a, i) => {
+            const b = pr[i];
+            return a === b || a === b + 's' || a === b + 'es' || b === a + 's' || b === a + 'es';
+        });
+        if (soloNumero) return false;
+    }
+    if (new RegExp('(^|\\s)' + _escRe(w) + '(\\s|$)').test(r)) return false;
+    return true;
+}
+
+// Bloque del prompt con el vocabulario del usuario. Antes decía "(o variaciones fonéticas
+// parecidas)" y "Prioridad Máxima": la IA lo usaba como licencia para cambiar palabras
+// parecidas (conductos->conducto, ortográfica->vertical, "coma..."->"Cavidad o base").
+// Ahora: coincidencia EXACTA, sin tocar el resto de la frase, y las entradas idénticas
+// (ej. "ortográfica": "ortográfica") se mandan como TÉRMINOS PROTEGIDOS.
+function construirReglasDiccionario() {
+    const reemplazos = [], protegidos = [];
+    for (const [wrong, right] of Object.entries(correctionsDict)) {
+        const w = String(wrong || '').trim(), r = String(right || '').trim();
+        if (!w || !r) continue;
+        if (w.toLowerCase() === r.toLowerCase()) {
+            if (!(wrong in defaultCorrectionsDict)) protegidos.push(r);
+            continue;
+        }
+        if (!esReglaDiccionarioSegura(w, r)) continue;
+        reemplazos.push(`- "${w}" → "${r}"`);
+    }
+    let out = '';
+    if (reemplazos.length) {
+        out += "\n\n### VOCABULARIO PERSONALIZADO DEL USUARIO (corrección de errores de transcripción):\n";
+        out += "Aplica cada corrección SOLO cuando en el dictado aparezca EXACTAMENTE la palabra o frase de la izquierda (palabra completa). NO la apliques por parecido fonético ni a palabras distintas. NUNCA la uses como motivo para cambiar el singular/plural, agregar o quitar palabras en el resto de la frase.\n";
+        out += reemplazos.join('\n');
+    }
+    if (protegidos.length) {
+        out += "\n\n### TÉRMINOS PROTEGIDOS DEL USUARIO (PRIORIDAD MÁXIMA):\n";
+        out += "Estas palabras son correctas y deliberadas. Si aparecen en el dictado, transcríbelas EXACTAMENTE iguales; está PROHIBIDO reemplazarlas por otra palabra más habitual: ";
+        out += protegidos.map(p => `"${p}"`).join(', ') + '.';
+    }
+    return out;
 }
 
 let correctionsMeta = {};
@@ -488,7 +563,8 @@ function applyCorrections(text) {
     
     // 1. Reemplazos de diccionario estándar
     for (const [wrong, right] of Object.entries(correctionsDict)) {
-        const regex = new RegExp(`\\b${wrong}\\b`, 'gi');
+        if (!esReglaDiccionarioSegura(wrong, right)) continue; // no singulariza/pluraliza ni duplica texto
+        const regex = new RegExp(`\\b${_escRe(wrong)}\\b`, 'gi');
         correctedText = correctedText.replace(regex, right);
     }
     
@@ -2207,7 +2283,7 @@ async function llamarDeepSeek(model, messages, deepseekKey, { esperaInicioMs = 1
 // === Lógica de Procesamiento con IA (Google Gemini) ===
 aiProcessBtn.addEventListener('click', async () => {
     triggerCorrectionCheck(); // No bloqueante: el aprendizaje corre en 2º plano (ya se dispara en input/blur). El await previo retrasaba CADA procesado.
-    const textToProcess = transcriptionArea.value.trim();
+    const textToProcess = prepararDictadoParaIA(transcriptionArea.value.trim()); // puntuación dictada ("coma", "punto y coma") -> signos; rangos cortados por el STT
     const formatterModel = localStorage.getItem('formatter_model') || 'auto';
 
     if (!textToProcess) {
@@ -2232,16 +2308,7 @@ aiProcessBtn.addEventListener('click', async () => {
             function buildDynamicSystemPrompt() {
                 let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
                 
-                if (Object.keys(correctionsDict).length > 0) {
-                    let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-                    customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-                    for (const [wrong, right] of Object.entries(correctionsDict)) {
-                        if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                            customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-                        }
-                    }
-                    basePrompt += customRules;
-                }
+                basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
 
                 // Inyectar la fecha real del sistema para que el modelo NO la invente
                 const _hoy = new Date();
@@ -2302,9 +2369,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = responseData.content[0].text;
                 const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
                 resultText = _cambiosIA.informe;
-                resultText = adjustHeadersForSetTotal(resultText);
-                resultText = ensureCBCTParams(resultText, textToProcess);
-                resultText = normalizarSaltos(resultText);
+                resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -2346,16 +2411,7 @@ aiProcessBtn.addEventListener('click', async () => {
 
         try {
             let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-            if (Object.keys(correctionsDict).length > 0) {
-                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-                for (const [wrong, right] of Object.entries(correctionsDict)) {
-                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-                    }
-                }
-                systemPrompt += customRules;
-            }
+            systemPrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
             const _hoy = new Date();
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
@@ -2393,9 +2449,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = resultRaw;
                 const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
                 resultText = _cambiosIA.informe;
-                resultText = adjustHeadersForSetTotal(resultText);
-                resultText = ensureCBCTParams(resultText, textToProcess);
-                resultText = normalizarSaltos(resultText);
+                resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -2435,16 +2489,7 @@ aiProcessBtn.addEventListener('click', async () => {
 
         try {
             let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-            if (Object.keys(correctionsDict).length > 0) {
-                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-                for (const [wrong, right] of Object.entries(correctionsDict)) {
-                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-                    }
-                }
-                systemPrompt += customRules;
-            }
+            systemPrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
             const _hoy = new Date();
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
@@ -2478,9 +2523,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = resultRaw;
                 const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
                 resultText = _cambiosIA.informe;
-                resultText = adjustHeadersForSetTotal(resultText);
-                resultText = ensureCBCTParams(resultText, textToProcess);
-                resultText = normalizarSaltos(resultText);
+                resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -2520,16 +2563,7 @@ aiProcessBtn.addEventListener('click', async () => {
 
         try {
             let systemPrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-            if (Object.keys(correctionsDict).length > 0) {
-                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-                for (const [wrong, right] of Object.entries(correctionsDict)) {
-                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-                    }
-                }
-                systemPrompt += customRules;
-            }
+            systemPrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
             const _hoy = new Date();
             const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
             const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
@@ -2571,9 +2605,7 @@ aiProcessBtn.addEventListener('click', async () => {
                 let resultText = resultRaw;
                 const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
                 resultText = _cambiosIA.informe;
-                resultText = adjustHeadersForSetTotal(resultText);
-                resultText = ensureCBCTParams(resultText, textToProcess);
-                resultText = normalizarSaltos(resultText);
+                resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
                 transcriptionArea.value = resultText;
                 finalTranscript = resultText;
                 lastSystemText = resultText;
@@ -2679,16 +2711,7 @@ aiProcessBtn.addEventListener('click', async () => {
         function buildDynamicSystemPrompt() {
             let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
             
-            if (Object.keys(correctionsDict).length > 0) {
-                let customRules = "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-                customRules += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-                for (const [wrong, right] of Object.entries(correctionsDict)) {
-                    if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                        customRules += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-                    }
-                }
-                basePrompt += customRules;
-            }
+            basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
 
             // Inyectar la fecha real del sistema para que el modelo NO la invente
             const _hoy = new Date();
@@ -2768,8 +2791,7 @@ aiProcessBtn.addEventListener('click', async () => {
             let resultText = successResponse.candidates[0].content.parts[0].text;
             const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
             resultText = _cambiosIA.informe;
-            resultText = adjustHeadersForSetTotal(resultText);
-            resultText = ensureCBCTParams(resultText, textToProcess);
+            resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
             transcriptionArea.value = resultText;
             finalTranscript = resultText;
             lastSystemText = resultText;
@@ -2805,15 +2827,7 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
 
     const basePrompt = (typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.');
     let extra = "";
-    if (Object.keys(correctionsDict).length > 0) {
-        extra += "\n\n### VOCABULARIO Y REGLAS DE REEMPLAZO PERSONALIZADAS DEL USUARIO (Prioridad Máxima):\n";
-        extra += "Aplica estrictamente las siguientes correcciones de ortografía, terminología radiológica o vocabulario específico en el informe final:\n";
-        for (const [wrong, right] of Object.entries(correctionsDict)) {
-            if (wrong.toLowerCase().trim() !== right.toLowerCase().trim()) {
-                extra += `- Si en el dictado aparece "${wrong}" (o variaciones fonéticas parecidas), debes escribir SIEMPRE "${right}".\n`;
-            }
-        }
-    }
+    extra += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
     const _hoy = new Date();
     const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
     const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
@@ -2849,9 +2863,7 @@ async function procesarConClaudeFallback(textToProcess, modelo) {
         let resultText = data.content[0].text;
         const _cambiosIA = extraerCambiosIA(resultText); // separa el bloque <<<CAMBIOS>>> del informe
         resultText = _cambiosIA.informe;
-        resultText = adjustHeadersForSetTotal(resultText);
-        resultText = ensureCBCTParams(resultText, textToProcess);
-        resultText = normalizarSaltos(resultText);
+        resultText = postProcesarInforme(resultText, textToProcess); // Set Total + CBCT + saltos + redes de seguridad (rangos, nomenclatura, bite-wing)
         transcriptionArea.value = resultText;
         finalTranscript = resultText;
         lastSystemText = resultText;
@@ -2960,6 +2972,12 @@ function mostrarPanelCambios(cambios, dictado, informe) {
             const fdiEnInforme = [...enInf].sort();
             if (fdiEnInforme.length) items.push({ tipo: 'alerta', texto: 'CAMBIO DE NOMENCLATURA: dictaste los dientes como números enteros (' + nomen.enteros.join(', ') + ') y el informe los trae en FDI con punto (' + fdiEnInforme.join(', ') + '). Corrígelos o vuelve a procesar el dictado.' });
         }
+
+        // 1c) Correcciones automáticas hechas por código (rangos, nomenclatura, bite-wing)
+        (_avisosPostProceso || []).forEach(t => items.push({ tipo: 'cambio', texto: '[Corregido automáticamente] ' + t }));
+
+        // 1d) Verificaciones por código: hallazgos negativos omitidos y estudios faltantes en TIPO DE ESTUDIO
+        verificarContenidoDictado(dictado, informe).forEach(t => items.push({ tipo: 'alerta', texto: t }));
 
         // 2) Lista que reporta la IA
         if (cambios === null) {
@@ -3329,6 +3347,130 @@ function normalizarSaltos(text) {
         salida.push(lineas[i]);
     }
     return salida.join("\n");
+}
+
+// =====================================================================
+// === Pre y post-proceso determinista del dictado / informe (oct-2026) ===
+// =====================================================================
+
+// Antes de mandar el dictado a la IA:
+//  - "punto y coma" y "coma" dictados (el STT a veces los deja como palabra) -> ; y ,
+//    ("coma de aparente carácter temporal" terminaba como "Cavidad o base de aparente...")
+//  - Rangos de intensidad que el STT corta con un punto: "discreta. A marcada" -> "discreta a marcada".
+function prepararDictadoParaIA(texto) {
+    if (!texto) return texto;
+    let t = texto;
+    t = t.replace(/[ \t]*[,.]?[ \t]*\bpunto\s+y\s+coma\b[ \t]*[,.]?[ \t]*/gi, '; ');
+    t = t.replace(/[ \t]*,?[ \t]*\bcoma\b[ \t]*,?[ \t]*/gi, ', ');
+    const GRADO_INI = '(leve|levemente|discreta|discreto|moderada|moderado|marcada|marcado|incipiente|superficial|parcial)';
+    const GRADO_FIN = '(?=(?:moderad|marcad|avanzad|sever|profund|dentinari|discret|franc|total)[a-záéíóú]*\\b)';
+    t = t.replace(new RegExp('\\b' + GRADO_INI + '\\s*[.,;]\\s+a\\s+' + GRADO_FIN, 'gi'), '$1 a ');
+    return t;
+}
+
+// Avisos generados por las redes de seguridad; se muestran en el recuadro de cambios.
+let _avisosPostProceso = [];
+
+function postProcesarInforme(texto, dictado) {
+    _avisosPostProceso = [];
+    let t = texto;
+    try { t = quitarSeparacionBitewingNoDictada(t, dictado); } catch (e) { console.warn(e); }
+    t = adjustHeadersForSetTotal(t);
+    t = ensureCBCTParams(t, dictado);
+    try { t = restaurarRangosDientes(t, dictado); } catch (e) { console.warn(e); }
+    try { t = restaurarNomenclaturaEntera(t, dictado); } catch (e) { console.warn(e); }
+    t = normalizarSaltos(t);
+    return t;
+}
+
+// "Dientes 1.2 a 2.2" dictado como RANGO: si la IA lo dejó como "1.2 y 2.2", se restaura la "a".
+function restaurarRangosDientes(informe, dictado) {
+    if (!informe || !dictado) return informe;
+    const D = '(?:[1-8]\\.\\d|\\d{1,2})';
+    const re = new RegExp('\\b(?:zona\\s+)?(?:dientes?|piezas?)\\s+(' + D + ')\\s+(a|al)\\s+(' + D + ')\\b', 'gi');
+    let m, t = informe;
+    while ((m = re.exec(dictado)) !== null) {
+        const [, x, con, y] = m;
+        const yaEsta = new RegExp('\\b' + _escRe(x) + '\\s+(?:a|al)\\s+' + _escRe(y) + '\\b').test(t);
+        if (yaEsta) continue;
+        const reMal = new RegExp('(\\b(?:zona\\s+)?(?:dientes?|piezas?)\\s+' + _escRe(x) + ')\\s*(?:y|-|,)\\s*(' + _escRe(y) + ')\\b', 'gi');
+        const antes = t;
+        t = t.replace(reMal, `$1 ${con.toLowerCase()} $2`);
+        if (t !== antes) _avisosPostProceso.push(`Rango restaurado: "${x} ${con} ${y}" (la IA lo había cambiado a "${x} y ${y}").`);
+    }
+    return t;
+}
+
+// Si el dictado venía SOLO con dientes enteros (12, 18, 30...) y la IA igual escribió
+// X.X dentro de una referencia de diente (ej. "Dientes 1.2 y 1.8"), se devuelven a enteros
+// cuando la concatenación de dígitos es un número dictado (1.2 -> 12, 3.0 -> 30).
+function restaurarNomenclaturaEntera(informe, dictado) {
+    if (!informe) return informe;
+    const nomen = detectarNomenclaturaDictado(dictado);
+    if (!nomen.soloEnteros) return informe;
+    const enteros = new Set(nomen.enteros);
+    const cambios = [];
+    const reRef = /(\b(?:zona\s+)?(?:dientes?|piezas?)\s+)([1-8]\.\d(?:\s*(?:,|-|y|e|a|al)\s*[1-8]\.\d)*)/gi;
+    const out = informe.replace(reRef, (m, pre, lista) => pre + lista.replace(/\b([1-8])\.(\d)\b/g, (x, a, b) => {
+        const n = String(parseInt(a + b, 10));
+        if (enteros.has(n)) { cambios.push(`${x}→${n}`); return n; }
+        return x;
+    }));
+    if (cambios.length) _avisosPostProceso.push('Nomenclatura restaurada a la dictada (la IA la había pasado a FDI): ' + [...new Set(cambios)].join(', ') + '.');
+    return out;
+}
+
+// La IA a veces separa la bite-wing en DERECHA/IZQUIERDA sin que se haya dictado.
+// Si el dictado no menciona ningún lado, se quitan esos subtítulos (los hallazgos quedan en una sola lista).
+function quitarSeparacionBitewingNoDictada(informe, dictado) {
+    if (!informe || !dictado) return informe;
+    if (/derech|izquierd/i.test(dictado)) return informe;
+    const reTit = /^\s*BITE[\s-]?WING\s+(?:DERECHA|IZQUIERDA)\b[^\n]*:\s*$/i;
+    const lineas = informe.split('\n');
+    if (!lineas.some(l => reTit.test(l))) return informe;
+    _avisosPostProceso.push('Se quitaron los subtítulos BITE-WING DERECHA/IZQUIERDA: no dictaste separación por lado.');
+    return lineas.filter(l => !reTit.test(l)).join('\n');
+}
+
+// Verificaciones (solo avisan) que se muestran en el recuadro de cambios.
+function verificarContenidoDictado(dictado, informe) {
+    const avisos = [];
+    const nd = _normDict(dictado), ni = _normDict(informe);
+    if (!nd || !ni) return avisos;
+
+    // 1) Hallazgos negativos dictados ("no se observan caries proximales") que la IA omitió.
+    const reNeg = /\bno\s+se\s+observa(n)?\s+([a-zñ]+)(?:\s+([a-zñ]+))?(?:\s+([a-zñ]+))?/g;
+    const vistos = new Set();
+    let m;
+    while ((m = reNeg.exec(nd)) !== null) {
+        const palabras = [m[2], m[3], m[4]].filter(Boolean);
+        const frase = 'no se observa' + (m[1] || '') + ' ' + palabras.join(' ');
+        if (vistos.has(frase)) continue;
+        vistos.add(frase);
+        const clave = palabras.slice(0, 2).map(_escRe).join('\\s+');
+        if (!new RegExp('no\\s+se\\s+observan?\\s+' + clave).test(ni)) {
+            avisos.push(`Hallazgo negativo dictado que NO aparece en el informe: "${frase}…"`);
+        }
+    }
+
+    // 2) Estudios dictados que no quedaron en TIPO DE ESTUDIO.
+    const tipo = _normDict(((informe || '').match(/TIPO\s+DE\s+ESTUDIO\s*:\s*([^\n\r]+)/i) || [])[1] || '');
+    if (tipo) {
+        const ESTUDIOS = [
+            ['Radiografía Panorámica', /panoramica/, /panoramica/],
+            ['Bite-Wing', /bite[\s-]?wing|bitewing|baitwing/, /bite[\s-]?wing/],
+            ['Periapical', /radiografias?\s+periapical|periapical(?:es)?\s+(?:de\s+)?(?:los\s+|las\s+)?(?:dientes?|piezas?|incisivos|caninos|premolares|molares)/, /periapical/],
+            ['Cone Beam / CBCT', /cone[\s-]?beam|cbct|tomografia/, /cone[\s-]?beam|cbct|tomografia/],
+            ['Telerradiografía', /tele\s*rradiografia|teleradiografia/, /tele\s*rr?adiografia/],
+            ['Set Total', /set\s+total/, /set\s+total/]
+        ];
+        ESTUDIOS.forEach(([nombre, enDictado, enTipo]) => {
+            if (enDictado.test(nd) && !enTipo.test(tipo)) {
+                avisos.push(`TIPO DE ESTUDIO: dictaste "${nombre}" pero no aparece en el tipo de estudio. Revísalo.`);
+            }
+        });
+    }
+    return avisos;
 }
 
 // Función común para preparar el documento procesado
@@ -5732,7 +5874,7 @@ Editado: "${edited}"`;
                 const w = wrong.toLowerCase().trim();
                 const r = right.trim();
                 // Evitamos duplicados, vacíos o que sean idénticas
-                if (w && r && w !== r.toLowerCase() && !correctionsDict[w]) {
+                if (w && r && w !== r.toLowerCase() && !correctionsDict[w] && esReglaDiccionarioSegura(w, r)) {
                     correctionsDict[w] = r;
                     correctionsMeta[w] = { auto: true, date: new Date().toLocaleDateString() };
                     addedCount++;
