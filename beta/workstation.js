@@ -199,6 +199,31 @@
         setMode,
     };
 
+    // ---- Configuración: proxy de imágenes (Cloudflare Worker) ----
+    (function buildProxySetting() {
+        const modal = document.getElementById('config-modal');
+        if (!modal) return;
+        const sec = document.createElement('div');
+        sec.className = 'backup-section';
+        sec.innerHTML = `
+            <h3>Proxy de imágenes del tablero</h3>
+            <p class="small-text">Necesario para arrastrar al tablero imágenes desde programas o páginas que entregan direcciones web en vez de archivos (el navegador no puede descargarlas directo). Despliega <code>image-proxy-worker.js</code> en Cloudflare y pega aquí su URL.</p>
+            <input type="text" id="image-proxy-input" placeholder="https://gtx-imagenes.tuusuario.workers.dev" style="width:100%;margin-top:6px">
+            <p class="small-text image-proxy-status" style="margin-top:4px"></p>`;
+        modal.querySelector('.modal-body').appendChild(sec);
+        const inp = sec.querySelector('#image-proxy-input');
+        const st = sec.querySelector('.image-proxy-status');
+        const show = () => { const v = safeGet('gtx_image_proxy_url'); st.textContent = v ? 'Guardado ✓' : 'Sin configurar.'; };
+        inp.value = safeGet('gtx_image_proxy_url') || '';
+        inp.addEventListener('change', () => {
+            const v = inp.value.trim().replace(/\/+$/, '');
+            if (v && !/^https:\/\//i.test(v)) { st.textContent = 'La URL debe empezar con https://'; return; }
+            if (v) safeSet('gtx_image_proxy_url', v); else { try { localStorage.removeItem('gtx_image_proxy_url'); } catch (e) { /* noop */ } }
+            show();
+        });
+        show();
+    })();
+
     // ---- Limpieza: tableros sin uso por más de 14 días ----
     setTimeout(() => {
         if (window.GTXCanvasStore) window.GTXCanvasStore.prune(14, [currentBoard(), 'default'])

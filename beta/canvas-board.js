@@ -127,19 +127,46 @@
         }
         return [...new Set(urls)].filter(u => /^(https?:|data:image\/|blob:)/i.test(u)).slice(0, 40);
     }
+    const PROXY_KEY = 'gtx_image_proxy_url';
+    const MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', avif: 'image/avif' };
+    function imageProxyUrl() { try { return (localStorage.getItem(PROXY_KEY) || '').trim().replace(/\/+$/, ''); } catch (e) { return ''; } }
+    const hostOf = (u) => { try { return new URL(u).hostname; } catch (e) { return ''; } };
+
+    async function blobToImageFile(blob, name) {
+        let type = blob.type;
+        const ext = (name.split('.').pop() || '').toLowerCase();
+        if (!/^image\//.test(type)) {
+            if (!MIME_BY_EXT[ext]) throw new Error('no es imagen');
+            type = MIME_BY_EXT[ext];
+        }
+        return new File([blob], IMG_NAME.test(name) ? name : name + '.' + (type.split('/')[1] || 'jpg').replace('jpeg', 'jpg'), { type });
+    }
+
+    /** Descarga imágenes por dirección: primero directo; si el sitio lo bloquea, a través del proxy (Worker). */
     async function fetchImageUrls(urls) {
         const files = [], failed = [];
+        const proxy = imageProxyUrl();
         for (const u of urls) {
             const name = (u.startsWith('data:') ? 'imagen' : decodeURIComponent(u.split('?')[0].split('/').pop() || 'imagen')).slice(0, 80);
+            const host = hostOf(u);
             try {
                 const r = await fetch(u, { credentials: 'omit' });
                 if (!r.ok) throw new Error('HTTP ' + r.status);
-                const blob = await r.blob();
-                if (!/^image\//.test(blob.type)) throw new Error('no es imagen');
-                files.push(new File([blob], IMG_NAME.test(name) ? name : name + '.' + (blob.type.split('/')[1] || 'jpg'), { type: blob.type }));
-            } catch (e) {
-                failed.push({ name, why: 'la página de origen no permite copiarla' });
+                files.push(await blobToImageFile(await r.blob(), name));
+                continue;
+            } catch (e) { /* bloqueado por el sitio (CORS) o no es imagen: probar con el proxy */ }
+            if (proxy && /^https?:/i.test(u)) {
+                try {
+                    const r = await fetch(proxy + '/?url=' + encodeURIComponent(u));
+                    if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
+                    files.push(await blobToImageFile(await r.blob(), name));
+                    continue;
+                } catch (e) {
+                    failed.push({ name, why: `tampoco se pudo con el proxy: ${String(e.message || e).slice(0, 80)}` });
+                    continue;
+                }
             }
+            failed.push({ name, why: `${host ? 'el sitio ' + host : 'la página de origen'} no permite copiarla; configura el "Proxy de imágenes del tablero" en ⚙ Configuración`, needsProxy: true });
         }
         return { files, failed };
     }
@@ -438,8 +465,8 @@
             return e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
         }
         _hasDroppable(e) {
-            const t = [...((e.dataTransfer && e.dataTransfer.types) || [])];
-            return t.includes('Files') || t.includes('text/uri-list') || t.includes('text/html');
+            const t = [...((e.dataTransfer && e.dataTransfer.types) || [])].map(x => String(x).toLowerCase());
+            return t.includes('files') || t.includes('text/uri-list') || t.includes('text/html') || t.includes('downloadurl');
         }
 
         async _onDrop(e) {
@@ -458,12 +485,15 @@
             }
             if (!files.length && !dirs.length && dt.files) files.push(...dt.files);
             const uriList = dt.getData('text/uri-list'), html = dt.getData('text/html');
+            let dlUrl = '';
+            try { dlUrl = dt.getData('DownloadURL'); } catch (e) { /* noop */ }
             // Carpetas completas
             for (const d of dirs) await filesFromEntry(d, 300, files);
             // Desde una página web: vienen direcciones, no archivos
             let failed = [];
             if (!files.length) {
-                const r = await fetchImageUrls(urlsFromDrop(uriList, html));
+                const extra = dlUrl ? [dlUrl.replace(/^[^:]+:[^:]*:/, '')] : [];
+                const r = await fetchImageUrls([...new Set([...extra, ...urlsFromDrop(uriList, html)])].slice(0, 40));
                 files.push(...r.files);
                 failed = r.failed;
             }
