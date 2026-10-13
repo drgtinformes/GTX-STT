@@ -4171,7 +4171,14 @@ if (sendGmailBtn) {
             const thread = await findPatientThread(docData.patientName); 
 
             if (!thread) {
-                alert("No se encontró ningún correo reciente que coincida con el nombre del paciente.");
+                const info = (typeof lastGmailSearchInfo !== 'undefined') ? lastGmailSearchInfo : {};
+                alert(
+                    `No se encontró ningún correo de los últimos 7 días para:\n"${info.name || docData.patientName}"\n\n` +
+                    `Cuenta revisada: ${info.account || 'desconocida'}\n\n` +
+                    `Revisa que la primera línea del informe sea el nombre del paciente ` +
+                    `y que hayas iniciado sesión con la cuenta que recibe las órdenes.`
+                );
+                console.log("Consultas Gmail probadas:", info.queries);
                 sendGmailBtn.innerHTML = originalText;
                 sendGmailBtn.disabled = false;
                 return;
