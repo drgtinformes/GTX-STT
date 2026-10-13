@@ -2,7 +2,8 @@
  * GTX CANVAS — tablero de imágenes tipo PureRef
  * ------------------------------------------------------------
  * - Mover imágenes, escalarlas (esquinas o Ctrl+rueda), zoom/pan del tablero.
- * - Rotar 90°, espejar, invertir, brillo/contraste por imagen.
+ * - Selección múltiple (recuadro, Shift/Ctrl+clic, Ctrl+A) y ajustes en grupo.
+ * - Rotar 90°, espejar, invertir, brillo/contraste/nitidez por imagen o en grupo.
  * - Ordenar automático (panorámicas arriba, el resto en filas) y ajustar a pantalla.
  * - Arrastrar archivos, pegar con Ctrl+V o botón "Agregar".
  * - Persistencia en IndexedDB (las imágenes no caben en localStorage).
@@ -96,21 +97,47 @@
 
     const ZMIN = 0.02, ZMAX = 16;
     const GAP = 30;
+    const SHARP_LEVELS = 10;
 
     const HELP = [
         ['Rueda', 'Zoom del tablero'],
-        ['Arrastrar fondo / botón central / Espacio', 'Mover el tablero'],
-        ['Arrastrar imagen', 'Moverla'],
-        ['Esquinas o Ctrl + rueda sobre la imagen', 'Agrandar / achicar'],
+        ['Botón central, botón derecho o Espacio + arrastrar', 'Mover el tablero'],
+        ['Arrastrar sobre el fondo', 'Seleccionar varias imágenes (recuadro)'],
+        ['Shift / Ctrl + clic', 'Agregar o quitar una imagen de la selección'],
+        ['Ctrl+A', 'Seleccionar todas'],
+        ['Arrastrar imagen', 'Mover (todas las seleccionadas)'],
+        ['Esquinas o Ctrl + rueda sobre la imagen', 'Agrandar / achicar (también en grupo)'],
         ['Doble clic', 'Enfocar imagen (otra vez o Esc para volver)'],
         ['R / Shift+R', 'Rotar derecha / izquierda'],
         ['H', 'Espejar'],
         ['I', 'Invertir'],
         ['F', 'Ajustar todo a pantalla'],
         ['A', 'Ordenar automático'],
-        ['Supr', 'Quitar imagen'],
+        ['Supr', 'Quitar las seleccionadas'],
+        ['Ctrl+Z', 'Deshacer la última eliminación'],
         ['Ctrl+V', 'Pegar imagen (con el tablero activo)'],
     ];
+
+    /** Filtros SVG de nitidez (convolución "unsharp") reutilizables por CSS: url(#cb-sharp-N) */
+    function ensureSharpenDefs(doc) {
+        if (doc.getElementById('cb-sharp-defs')) return;
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = doc.createElementNS(NS, 'svg');
+        svg.setAttribute('id', 'cb-sharp-defs');
+        svg.setAttribute('width', '0');
+        svg.setAttribute('height', '0');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.style.position = 'absolute';
+        let defs = '';
+        for (let n = 1; n <= SHARP_LEVELS; n++) {
+            const k = (n * 0.12).toFixed(3);
+            const c = (1 + 4 * n * 0.12).toFixed(3);
+            defs += `<filter id="cb-sharp-${n}" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">` +
+                `<feConvolveMatrix order="3" preserveAlpha="true" edgeMode="duplicate" kernelMatrix="0 -${k} 0 -${k} ${c} -${k} 0 -${k} 0"/></filter>`;
+        }
+        svg.innerHTML = `<defs>${defs}</defs>`;
+        (doc.body || doc.documentElement).appendChild(svg);
+    }
 
     // ---------- Tablero ----------
     class Board {
@@ -126,15 +153,21 @@
             this.view = { x: 0, y: 0, z: 1 };
             this.urls = new Map();       // key -> objectURL
             this.els = new Map();        // id  -> element
-            this.selected = null;
+            this.sel = new Set();        // ids seleccionados
+            this.primary = null;         // última imagen clicada (referencia para los controles)
             this.focusPrev = null;       // vista previa al doble clic
             this.spaceDown = false;
             this.drag = null;
+            this._undo = null;           // última eliminación (Ctrl+Z)
             this._saveT = null;
             this._destroyed = false;
+            ensureSharpenDefs(container.ownerDocument || document);
             this._build();
             this._bind();
         }
+
+        /** Compatibilidad: id de la imagen principal seleccionada (o null). */
+        get selected() { const it = this._sel(); return it ? it.id : null; }
 
         // ----- construcción del DOM -----
         _build() {
@@ -161,12 +194,14 @@
                         <p>Arrastra imágenes aquí, pégalas con <b>Ctrl+V</b><br>o usa <b>Agregar</b></p>
                     </div>
                     <div class="cb-drop-hint">Suelta para agregar</div>
+                    <div class="cb-marquee"></div>
                     <div class="cb-itembar">
+                        <span class="cb-count"></span>
                         <button data-iact="rotl" title="Rotar a la izquierda (Shift+R)"><i data-lucide="rotate-ccw"></i></button>
                         <button data-iact="rotr" title="Rotar a la derecha (R)"><i data-lucide="rotate-cw"></i></button>
                         <button data-iact="flip" title="Espejar (H)"><i data-lucide="flip-horizontal-2"></i></button>
                         <button data-iact="inv" title="Invertir (I)"><i data-lucide="contrast"></i></button>
-                        <button data-iact="adj" title="Brillo y contraste"><i data-lucide="sun"></i></button>
+                        <button data-iact="adj" title="Brillo, contraste y nitidez"><i data-lucide="sun"></i></button>
                         <span class="cb-sep"></span>
                         <button data-iact="back" title="Enviar atrás (dejar debajo de las demás)"><i data-lucide="send-to-back"></i></button>
                         <button data-iact="focus" title="Enfocar (doble clic)"><i data-lucide="scan-search"></i></button>
@@ -174,9 +209,12 @@
                         <button data-iact="del" class="cb-del" title="Quitar del tablero (Supr)"><i data-lucide="trash-2"></i></button>
                     </div>
                     <div class="cb-adjust">
+                        <div class="cb-adjust-head"></div>
                         <label>Brillo <input type="range" min="40" max="220" step="1" data-adj="br"><output></output></label>
                         <label>Contraste <input type="range" min="40" max="300" step="1" data-adj="ct"><output></output></label>
+                        <label>Nitidez <input type="range" min="0" max="100" step="10" data-adj="sh"><output></output></label>
                     </div>
+                    <div class="cb-notice"><span></span><button type="button" data-undo>Deshacer</button></div>
                     <div class="cb-help">
                         ${HELP.map(([k, v]) => `<div><kbd>${k}</kbd><span>${v}</span></div>`).join('')}
                     </div>
@@ -192,8 +230,11 @@
             this.selbox.innerHTML = ['nw', 'ne', 'sw', 'se'].map(c => `<div class="cb-h" data-h="${c}"></div>`).join('');
             this.world.appendChild(this.selbox);
             this.emptyEl = root.querySelector('.cb-empty');
+            this.marquee = root.querySelector('.cb-marquee');
             this.itembar = root.querySelector('.cb-itembar');
+            this.countEl = root.querySelector('.cb-count');
             this.adjust = root.querySelector('.cb-adjust');
+            this.noticeEl = root.querySelector('.cb-notice');
             this.helpEl = root.querySelector('.cb-help');
             this.zoomEl = root.querySelector('.cb-zoom');
             this.titleEl = root.querySelector('.cb-title');
@@ -234,7 +275,7 @@
             this._ro = new ResizeObserver(() => this._renderAll());
             this._ro.observe(vp);
 
-            // Evitar que el botón central abra el "autoscroll" del navegador
+            // Evitar el "autoscroll" del botón central y el menú contextual (botón derecho = mover)
             vp.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
             vp.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -263,19 +304,23 @@
             this.adjust.addEventListener('pointerdown', (e) => e.stopPropagation());
             this.adjust.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
             this.adjust.addEventListener('input', (e) => {
-                const it = this._sel();
                 const inp = e.target.closest('[data-adj]');
-                if (!it || !inp) return;
-                it[inp.dataset.adj] = Number(inp.value) / 100;
+                const list = this._selItems();
+                if (!list.length || !inp) return;
+                const v = Number(inp.value) / 100;
+                for (const it of list) { it[inp.dataset.adj] = v; this._renderItem(it); }
                 inp.nextElementSibling.textContent = inp.value + '%';
-                this._renderItem(it);
+                this._placeItembar();
                 this._save();
             });
+            this.noticeEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+            this.noticeEl.addEventListener('click', (e) => { if (e.target.closest('[data-undo]')) this.undo(); });
             this.helpEl.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.helpEl.classList.remove('show'); });
         }
 
         destroy() {
             this._destroyed = true;
+            this._finalizeUndo();
             this._flushSave();
             const vp = this.vp;
             for (const [ev, fn] of Object.entries(this._h)) {
@@ -296,6 +341,7 @@
 
         // ----- carga / guardado -----
         async load(boardId, title) {
+            this._finalizeUndo();
             if (this._saveT) await this._flushSave();   // guardar el tablero anterior antes de cambiar
             if (boardId) this.boardId = boardId;
             for (const url of this.urls.values()) URL.revokeObjectURL(url);
@@ -307,7 +353,8 @@
             for (const el of this.els.values()) el.remove();
             this.els.clear();
             this.items = [];
-            this.selected = null;
+            this.sel.clear();
+            this.primary = null;
             if (data && Array.isArray(data.items)) {
                 for (const it of data.items) {
                     try {
@@ -393,7 +440,7 @@
                     id: uid(), key, name: f.name || '', w: dim.w, h: dim.h,
                     x: center.x - (dim.w * s) / 2 + i * 40 / this.view.z,
                     y: center.y - (dim.h * s) / 2 + i * 40 / this.view.z,
-                    s, rot: 0, flip: false, inv: false, br: 1, ct: 1,
+                    s, rot: 0, flip: false, inv: false, br: 1, ct: 1, sh: 0,
                     z: this._topZ() + 1,
                 };
                 this.items.push(it);
@@ -417,7 +464,11 @@
             return { x: (cx - r.left - this.view.x) / this.view.z, y: (cy - r.top - this.view.y) / this.view.z };
         }
         _topZ() { return this.items.reduce((m, it) => Math.max(m, it.z || 0), 0); }
-        _sel() { return this.items.find(it => it.id === this.selected) || null; }
+        _selItems() { return this.items.filter(it => this.sel.has(it.id)); }
+        _sel() {
+            if (!this.sel.size) return null;
+            return this.items.find(it => it.id === this.primary && this.sel.has(it.id)) || this._selItems()[0] || null;
+        }
         _bounds(list) {
             list = list || this.items;
             if (!list.length) return null;
@@ -428,6 +479,10 @@
                 x1 = Math.max(x1, it.x + dw); y1 = Math.max(y1, it.y + dh);
             }
             return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        }
+        _hit(it, w) {
+            const d = this._dims(it);
+            return w.x >= it.x && w.x <= it.x + d.dw && w.y >= it.y && w.y <= it.y + d.dh;
         }
 
         // ----- render -----
@@ -452,21 +507,25 @@
             el.style.width = dw + 'px';
             el.style.height = dh + 'px';
             el.style.zIndex = it.z || 0;
-            el.classList.toggle('selected', it.id === this.selected);
-            if (it.id === this.selected) this._placeSelbox(it);
+            el.classList.toggle('selected', this.sel.has(it.id));
             const img = el.firstElementChild;
             img.style.width = it.w * it.s + 'px';
             img.style.height = it.h * it.s + 'px';
             img.style.transform = `translate(-50%, -50%) rotate(${it.rot}deg) scaleX(${it.flip ? -1 : 1})`;
             const f = [];
+            const sharp = Math.round((it.sh || 0) * SHARP_LEVELS);
+            if (sharp > 0) f.push(`url(#cb-sharp-${Math.min(SHARP_LEVELS, sharp)})`);
             if (it.inv) f.push('invert(1)');
-            if (it.br !== 1) f.push(`brightness(${it.br})`);
-            if (it.ct !== 1) f.push(`contrast(${it.ct})`);
+            if ((it.br ?? 1) !== 1) f.push(`brightness(${it.br})`);
+            if ((it.ct ?? 1) !== 1) f.push(`contrast(${it.ct})`);
             img.style.filter = f.join(' ');
         }
 
-        _placeSelbox(it) {
-            if (!it) { this.selbox.style.display = 'none'; return; }
+        _placeSelbox() {
+            // Las esquinas para redimensionar se muestran solo con UNA imagen seleccionada
+            const list = this._selItems();
+            if (list.length !== 1) { this.selbox.style.display = 'none'; return; }
+            const it = list[0];
             const { dw, dh } = this._dims(it);
             const sb = this.selbox.style;
             sb.display = 'block';
@@ -490,52 +549,70 @@
         }
 
         _placeItembar() {
-            const it = this._sel();
-            this._placeSelbox(it);
-            if (!it) {
+            this._placeSelbox();
+            const list = this._selItems();
+            if (!list.length) {
                 this.itembar.classList.remove('show');
                 this.adjust.classList.remove('show');
                 return;
             }
-            const { dw } = this._dims(it);
+            const b = this._bounds(list);
             const vpW = this.vp.clientWidth, vpH = this.vp.clientHeight;
+            this.countEl.textContent = list.length > 1 ? `${list.length} imágenes` : '';
+            this.countEl.style.display = list.length > 1 ? '' : 'none';
+            this.itembar.classList.add('show');
             const bw = this.itembar.offsetWidth || 330, bh = this.itembar.offsetHeight || 36;
-            let left = it.x * this.view.z + this.view.x + (dw * this.view.z) / 2 - bw / 2;
-            let top = it.y * this.view.z + this.view.y - bh - 10;
+            let left = b.x * this.view.z + this.view.x + (b.w * this.view.z) / 2 - bw / 2;
+            let top = b.y * this.view.z + this.view.y - bh - 10;
             left = clamp(left, 6, Math.max(6, vpW - bw - 6));
             top = clamp(top, 6, Math.max(6, vpH - bh - 6));
             this.itembar.style.left = left + 'px';
             this.itembar.style.top = top + 'px';
-            this.itembar.classList.add('show');
             if (this.adjust.classList.contains('show')) {
+                const ah = this.adjust.offsetHeight || 120;
                 this.adjust.style.left = left + 'px';
-                this.adjust.style.top = (top + bh + 6 > vpH - 90 ? top - 90 : top + bh + 6) + 'px';
+                this.adjust.style.top = (top + bh + 6 + ah > vpH - 6 ? Math.max(6, top - ah - 6) : top + bh + 6) + 'px';
             }
-            this.itembar.querySelector('[data-iact="inv"]').classList.toggle('on', !!it.inv);
-            this.itembar.querySelector('[data-iact="flip"]').classList.toggle('on', !!it.flip);
-            this.itembar.querySelector('[data-iact="adj"]').classList.toggle('on', it.br !== 1 || it.ct !== 1);
+            const all = (fn) => list.every(fn);
+            this.itembar.querySelector('[data-iact="inv"]').classList.toggle('on', all(it => !!it.inv));
+            this.itembar.querySelector('[data-iact="flip"]').classList.toggle('on', all(it => !!it.flip));
+            this.itembar.querySelector('[data-iact="adj"]').classList.toggle('on', list.some(it => (it.br ?? 1) !== 1 || (it.ct ?? 1) !== 1 || (it.sh || 0) > 0));
         }
 
-        // ----- selección y acciones -----
-        select(id) {
-            if (this.selected !== id) this.adjust.classList.remove('show');
-            this.selected = id;
+        // ----- selección -----
+        /** Selecciona una sola imagen (o ninguna con null). */
+        select(id) { this.setSelection(id ? [id] : [], id); }
+
+        /** Reemplaza la selección por la lista de ids. */
+        setSelection(ids, primary) {
+            const before = [...this.sel].sort().join(',');
+            this.sel = new Set(ids.filter(id => this.items.some(it => it.id === id)));
+            this.primary = primary && this.sel.has(primary) ? primary : ([...this.sel].pop() || null);
+            const after = [...this.sel].sort().join(',');
+            if (before !== after) this.adjust.classList.remove('show');
+            else if (this.adjust.classList.contains('show')) this._syncAdjust();
             this.items.forEach(it => this._renderItem(it));
             this._placeItembar();
         }
 
+        selectAll() { this.setSelection(this.items.map(it => it.id), this.primary); }
+
         _itemAction(act) {
-            const it = this._sel();
-            if (!it) return;
-            if (act === 'rotr' || act === 'rotl') this._rotate(it, act === 'rotr' ? 90 : -90);
-            else if (act === 'flip') it.flip = !it.flip;
-            else if (act === 'inv') it.inv = !it.inv;
-            else if (act === 'adj') { this._toggleAdjust(it); return; }
-            else if (act === 'back') { const minZ = this.items.reduce((m, o) => Math.min(m, o.z || 0), Infinity); it.z = minZ - 1; }
-            else if (act === 'focus') { this.focusItem(it); return; }
-            else if (act === 'reset') { this._rotate(it, -it.rot); it.flip = false; it.inv = false; it.br = 1; it.ct = 1; this._syncAdjust(it); }
-            else if (act === 'del') { this.remove(it.id); return; }
-            this._renderItem(it);
+            const list = this._selItems();
+            if (!list.length) return;
+            const allOn = (k) => list.every(it => !!it[k]);
+            if (act === 'rotr' || act === 'rotl') list.forEach(it => this._rotate(it, act === 'rotr' ? 90 : -90));
+            else if (act === 'flip') { const v = !allOn('flip'); list.forEach(it => { it.flip = v; }); }
+            else if (act === 'inv') { const v = !allOn('inv'); list.forEach(it => { it.inv = v; }); }
+            else if (act === 'adj') { this._toggleAdjust(); return; }
+            else if (act === 'back') {
+                const minZ = this.items.reduce((m, o) => Math.min(m, o.z || 0), Infinity);
+                [...list].sort((a, b) => (a.z || 0) - (b.z || 0)).forEach((it, i) => { it.z = minZ - list.length + i; });
+            }
+            else if (act === 'focus') { this.focusItems(list); return; }
+            else if (act === 'reset') { list.forEach(it => { this._rotate(it, -it.rot); it.flip = false; it.inv = false; it.br = 1; it.ct = 1; it.sh = 0; }); this._syncAdjust(); }
+            else if (act === 'del') { this.removeMany(list.map(it => it.id)); return; }
+            list.forEach(it => this._renderItem(it));
             this._placeItembar();
             this._save();
         }
@@ -550,47 +627,95 @@
             it.y = cy - after.dh / 2;
         }
 
-        _toggleAdjust(it) {
+        _toggleAdjust() {
             const show = !this.adjust.classList.contains('show');
             this.adjust.classList.toggle('show', show);
-            if (show) this._syncAdjust(it);
+            if (show) this._syncAdjust();
             this._placeItembar();
         }
 
-        _syncAdjust(it) {
+        _syncAdjust() {
+            const ref = this._sel();
+            if (!ref) return;
+            const n = this.sel.size;
+            this.adjust.querySelector('.cb-adjust-head').textContent = n > 1 ? `Ajustes para ${n} imágenes` : '';
             this.adjust.querySelectorAll('[data-adj]').forEach(inp => {
-                const v = Math.round((it[inp.dataset.adj] || 1) * 100);
+                const k = inp.dataset.adj;
+                const def = k === 'sh' ? 0 : 1;
+                const v = Math.round((ref[k] ?? def) * 100);
                 inp.value = v;
                 inp.nextElementSibling.textContent = v + '%';
             });
         }
 
-        remove(id) {
-            const idx = this.items.findIndex(it => it.id === id);
-            if (idx < 0) return;
-            const [it] = this.items.splice(idx, 1);
-            const el = this.els.get(id);
-            if (el) el.remove();
-            this.els.delete(id);
-            if (!this.items.some(o => o.key === it.key)) {
-                const url = this.urls.get(it.key);
-                if (url) URL.revokeObjectURL(url);
-                this.urls.delete(it.key);
-                Store.delImage(it.key).catch(() => {});
+        // ----- quitar / deshacer -----
+        remove(id) { this.removeMany([id]); }
+
+        removeMany(ids) {
+            const set = new Set(ids);
+            const removed = this.items.filter(it => set.has(it.id));
+            if (!removed.length) return;
+            this._finalizeUndo();
+            this.items = this.items.filter(it => !set.has(it.id));
+            for (const it of removed) {
+                const el = this.els.get(it.id);
+                if (el) el.remove();
+                this.els.delete(it.id);
             }
-            if (this.selected === id) this.selected = null;
+            // Las imágenes se borran definitivamente al confirmar (otra eliminación, cambio de tablero o cierre)
+            const orphanKeys = [...new Set(removed.map(it => it.key))].filter(k => !this.items.some(o => o.key === k));
+            this._undo = { items: removed, keys: orphanKeys };
+            this.setSelection([]);
             this._renderAll();
             this._save();
+            this._notice(`${removed.length === 1 ? '1 imagen quitada' : removed.length + ' imágenes quitadas'}`);
         }
+
+        undo() {
+            const u = this._undo;
+            if (!u) return false;
+            this._undo = null;
+            for (const it of u.items) { this.items.push(it); this._ensureEl(it); }
+            this.setSelection(u.items.map(it => it.id));
+            this._renderAll();
+            this._save();
+            this._hideNotice();
+            this.vp.focus({ preventScroll: true });   // el aviso se oculta: devolver el teclado al tablero
+            return true;
+        }
+
+        _finalizeUndo() {
+            const u = this._undo;
+            if (!u) return;
+            this._undo = null;
+            for (const k of u.keys) {
+                if (this.items.some(o => o.key === k)) continue;
+                const url = this.urls.get(k);
+                if (url) URL.revokeObjectURL(url);
+                this.urls.delete(k);
+                Store.delImage(k).catch(() => {});
+            }
+            this._hideNotice();
+        }
+
+        _notice(text) {
+            this.noticeEl.querySelector('span').textContent = text;
+            this.noticeEl.classList.add('show');
+            clearTimeout(this._noticeT);
+            this._noticeT = setTimeout(() => this._hideNotice(), 8000);
+        }
+        _hideNotice() { clearTimeout(this._noticeT); this.noticeEl.classList.remove('show'); }
 
         async clear(skipConfirm) {
             if (!this.items.length) return;
             if (!skipConfirm && !window.confirm('¿Quitar todas las imágenes del tablero?')) return;
+            this._finalizeUndo();
             const keys = [...new Set(this.items.map(it => it.key))];
             [...this.items].forEach(it => { const el = this.els.get(it.id); if (el) el.remove(); });
             this.items = [];
             this.els.clear();
-            this.selected = null;
+            this.sel.clear();
+            this.primary = null;
             for (const k of keys) {
                 const url = this.urls.get(k);
                 if (url) URL.revokeObjectURL(url);
@@ -630,11 +755,13 @@
             if (b) this.fitRect(b);
         }
 
-        focusItem(it) {
-            if (this.focusPrev && this.focusPrev.id === it.id) { this.unfocus(); return; }
-            this.focusPrev = { id: it.id, view: { ...this.view } };
-            const { dw, dh } = this._dims(it);
-            this.fitRect({ x: it.x, y: it.y, w: dw, h: dh }, 0.98);
+        focusItem(it) { this.focusItems([it]); }
+
+        focusItems(list) {
+            const key = list.map(it => it.id).sort().join(',');
+            if (this.focusPrev && this.focusPrev.id === key) { this.unfocus(); return; }
+            this.focusPrev = { id: key, view: { ...this.view } };
+            this.fitRect(this._bounds(list), 0.98);
         }
 
         unfocus() {
@@ -695,25 +822,41 @@
             this.vp.focus({ preventScroll: true });
             this.helpEl.classList.remove('show');
             const handle = e.target.closest('.cb-h');
-            const itemEl = e.target.closest('.cb-item');
-            const pan = e.button === 1 || (e.button === 0 && this.spaceDown);
+            const pan = e.button === 1 || e.button === 2 || (e.button === 0 && this.spaceDown);
             const w = this._toWorld(e.clientX, e.clientY);
+            const itemEl = e.target.closest('.cb-item');
+            const it = itemEl ? this.items.find(o => o.id === itemEl.dataset.id) : null;
+            const additive = e.shiftKey || e.ctrlKey || e.metaKey;
 
-            if (!pan && e.button === 0 && handle && this._sel()) {
-                const it = this._sel();
-                const { dw, dh } = this._dims(it);
+            if (!pan && e.button === 0 && handle && this.sel.size === 1) {
+                const t = this._sel();
+                const { dw, dh } = this._dims(t);
                 const c = handle.dataset.h;
-                const ax = c.includes('w') ? it.x + dw : it.x;
-                const ay = c.includes('n') ? it.y + dh : it.y;
-                this.drag = { mode: 'resize', it, c, ax, ay, dw0: dw, dh0: dh, s0: it.s };
-            } else if (!pan && e.button === 0 && itemEl) {
-                const it = this.items.find(o => o.id === itemEl.dataset.id);
-                if ((it.z || 0) < this._topZ()) { it.z = this._topZ() + 1; this._save(); }
-                this.select(it.id);
-                this.drag = { mode: 'move', it, ox: w.x - it.x, oy: w.y - it.y, moved: false };
-            } else if (pan || e.button === 0) {
-                this.drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, vx: this.view.x, vy: this.view.y, moved: false, empty: !itemEl && e.button === 0 };
+                const ax = c.includes('w') ? t.x + dw : t.x;
+                const ay = c.includes('n') ? t.y + dh : t.y;
+                this.drag = { mode: 'resize', it: t, c, ax, ay, dw0: dw, dh0: dh, s0: t.s };
+            } else if (!pan && e.button === 0 && it) {
+                if (additive) {
+                    // Shift/Ctrl + clic: agregar o quitar de la selección
+                    const ids = new Set(this.sel);
+                    if (ids.has(it.id)) ids.delete(it.id); else ids.add(it.id);
+                    this.setSelection([...ids], it.id);
+                    if (!this.sel.has(it.id)) { e.preventDefault(); return; }
+                } else if (!this.sel.has(it.id)) {
+                    this.select(it.id);
+                } else {
+                    this.primary = it.id;
+                }
+                if (this.sel.size === 1 && (it.z || 0) < this._topZ()) { it.z = this._topZ() + 1; this._renderItem(it); this._save(); }
+                const group = this._selItems();
+                this.drag = { mode: 'move', sx: w.x, sy: w.y, starts: group.map(g => ({ it: g, x: g.x, y: g.y })), moved: false };
+            } else if (pan) {
+                this.drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, vx: this.view.x, vy: this.view.y, moved: false };
                 this.vp.classList.add('cb-panning');
+            } else if (e.button === 0) {
+                // Recuadro de selección sobre el fondo
+                const r = this.vp.getBoundingClientRect();
+                this.drag = { mode: 'marquee', x0: e.clientX - r.left, y0: e.clientY - r.top, base: additive ? new Set(this.sel) : new Set(), moved: false, additive };
             } else {
                 return;
             }
@@ -732,10 +875,9 @@
                 this._renderView();
             } else if (d.mode === 'move') {
                 const w = this._toWorld(e.clientX, e.clientY);
-                d.it.x = w.x - d.ox;
-                d.it.y = w.y - d.oy;
+                const dx = w.x - d.sx, dy = w.y - d.sy;
+                for (const s of d.starts) { s.it.x = s.x + dx; s.it.y = s.y + dy; this._renderItem(s.it); }
                 d.moved = true;
-                this._renderItem(d.it);
                 this._placeItembar();
             } else if (d.mode === 'resize') {
                 const w = this._toWorld(e.clientX, e.clientY);
@@ -748,6 +890,23 @@
                 d.it.y = d.c.includes('n') ? d.ay - dh : d.ay;
                 this._renderItem(d.it);
                 this._placeItembar();
+            } else if (d.mode === 'marquee') {
+                const r = this.vp.getBoundingClientRect();
+                const x1 = e.clientX - r.left, y1 = e.clientY - r.top;
+                if (!d.moved && Math.abs(x1 - d.x0) + Math.abs(y1 - d.y0) < 4) return;
+                d.moved = true;
+                const L = Math.min(d.x0, x1), T = Math.min(d.y0, y1), W = Math.abs(x1 - d.x0), H = Math.abs(y1 - d.y0);
+                const m = this.marquee.style;
+                m.display = 'block'; m.left = L + 'px'; m.top = T + 'px'; m.width = W + 'px'; m.height = H + 'px';
+                // rectángulo en coordenadas del mundo; se seleccionan las imágenes que toca
+                const z = this.view.z;
+                const wx0 = (L - this.view.x) / z, wy0 = (T - this.view.y) / z, wx1 = (L + W - this.view.x) / z, wy1 = (T + H - this.view.y) / z;
+                const ids = new Set(d.base);
+                for (const it of this.items) {
+                    const dd = this._dims(it);
+                    if (it.x < wx1 && it.x + dd.dw > wx0 && it.y < wy1 && it.y + dd.dh > wy0) ids.add(it.id);
+                }
+                this.setSelection([...ids]);
             }
         }
 
@@ -756,8 +915,9 @@
             if (!d) return;
             this.drag = null;
             this.vp.classList.remove('cb-panning');
+            this.marquee.style.display = 'none';
             try { this.vp.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
-            if (d.mode === 'pan' && d.empty && !d.moved) this.select(null);
+            if (d.mode === 'marquee' && !d.moved && !d.additive) this.setSelection([]);
             if (d.moved || d.mode === 'resize' || d.mode === 'pan') this._save();
         }
 
@@ -767,24 +927,20 @@
             if (e.deltaMode === 1) dy *= 33;
             else if (e.deltaMode === 2) dy *= 400;
             const factor = Math.exp(-dy * 0.0015);
-            const it = this._sel();
-            let overSel = false;
-            if (it) {
-                const w = this._toWorld(e.clientX, e.clientY);
-                const d = this._dims(it);
-                overSel = w.x >= it.x && w.x <= it.x + d.dw && w.y >= it.y && w.y <= it.y + d.dh;
-            }
+            const list = this._selItems();
+            const w = this._toWorld(e.clientX, e.clientY);
+            const overSel = list.some(it => this._hit(it, w));
             if (e.ctrlKey && overSel) {
-                // Escalar la imagen seleccionada en torno al cursor
-                const w = this._toWorld(e.clientX, e.clientY);
-                const { dw, dh } = this._dims(it);
-                const rx = (w.x - it.x) / dw, ry = (w.y - it.y) / dh;
-                const minS = (24 / this.view.z) / Math.min(it.w, it.h);
-                it.s = Math.max(minS, it.s * factor);
-                const n = this._dims(it);
-                it.x = w.x - rx * n.dw;
-                it.y = w.y - ry * n.dh;
-                this._renderItem(it);
+                // Escalar la(s) imagen(es) seleccionada(s) en torno al cursor
+                const minS = (it) => (24 / this.view.z) / Math.min(it.w, it.h);
+                let f = factor;
+                for (const it of list) f = Math.max(f, minS(it) / it.s);
+                for (const it of list) {
+                    it.s *= f;
+                    it.x = w.x + (it.x - w.x) * f;
+                    it.y = w.y + (it.y - w.y) * f;
+                    this._renderItem(it);
+                }
                 this._placeItembar();
                 this._save();
             } else {
@@ -797,17 +953,14 @@
             const w = this._toWorld(cx, cy);
             let best = null;
             for (const it of this.items) {
-                const d = this._dims(it);
-                if (w.x >= it.x && w.x <= it.x + d.dw && w.y >= it.y && w.y <= it.y + d.dh) {
-                    if (!best || (it.z || 0) >= (best.z || 0)) best = it;
-                }
+                if (this._hit(it, w) && (!best || (it.z || 0) >= (best.z || 0))) best = it;
             }
             return best;
         }
 
         _onDbl(e) {
             // Con pointer capture el target del dblclick es el viewport: se ubica la imagen por coordenadas
-            if (e.target.closest('.cb-itembar, .cb-adjust, .cb-help')) return;
+            if (e.target.closest('.cb-itembar, .cb-adjust, .cb-help, .cb-notice')) return;
             const it = this._itemAt(e.clientX, e.clientY);
             if (it) {
                 this.focusItem(it);
@@ -824,17 +977,22 @@
                 e.preventDefault();
                 return;
             }
-            const it = this._sel();
             const k = e.key.toLowerCase();
-            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+                if (k === 'a') { this.selectAll(); e.preventDefault(); }
+                else if (k === 'z') { if (this.undo()) e.preventDefault(); }
+                return;
+            }
+            if (e.altKey) return;
+            const has = this.sel.size > 0;
             let handled = true;
             if (k === 'f') this.fit();
             else if (k === 'a') this.arrange();
-            else if (k === 'escape') { if (!this.unfocus()) this.select(null); this.helpEl.classList.remove('show'); }
-            else if (it && k === 'r') this._itemAction(e.shiftKey ? 'rotl' : 'rotr');
-            else if (it && k === 'h') this._itemAction('flip');
-            else if (it && k === 'i') this._itemAction('inv');
-            else if (it && (k === 'delete' || k === 'backspace')) this._itemAction('del');
+            else if (k === 'escape') { if (!this.unfocus()) this.setSelection([]); this.helpEl.classList.remove('show'); }
+            else if (has && k === 'r') this._itemAction(e.shiftKey ? 'rotl' : 'rotr');
+            else if (has && k === 'h') this._itemAction('flip');
+            else if (has && k === 'i') this._itemAction('inv');
+            else if (has && (k === 'delete' || k === 'backspace')) this._itemAction('del');
             else handled = false;
             if (handled) e.preventDefault();
         }
