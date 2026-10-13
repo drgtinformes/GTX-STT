@@ -44,38 +44,74 @@
     function walkParts(part, out) {
         if (!part) return out;
         if (part.parts && part.parts.length) part.parts.forEach(p => walkParts(p, out));
-        if (part.filename && part.body && part.body.attachmentId) out.push(part);
+        // Adjuntos con nombre, o imágenes sin nombre (frecuente en correos reenviados)
+        if (part.body && part.body.attachmentId && (part.filename || /^image\//i.test(part.mimeType || ''))) out.push(part);
         return out;
     }
 
     function isInlineDecoration(part) {
-        // Logos/firmas incrustadas en el cuerpo del correo: chicas y con Content-ID
+        // Solo se descartan logos/íconos de firma: muy pequeños, o PNG/GIF chicos incrustados.
+        // Las radiografías (JPG) de 20–60 KB, aunque vengan incrustadas al reenviar, SÍ se bajan.
         const size = (part.body && part.body.size) || 0;
         const headers = part.headers || [];
         const cid = headers.some(h => h.name.toLowerCase() === 'content-id');
         const inline = headers.some(h => h.name.toLowerCase() === 'content-disposition' && /inline/i.test(h.value));
-        if (size && size < 15000) return true;
-        if ((cid || inline) && size < 60000) return true;
+        const pngGif = /image\/(png|gif)/i.test(part.mimeType || '') || /\.(png|gif)$/i.test(part.filename || '');
+        if (size && size < 6000) return true;
+        if ((cid || inline) && pngGif && size < 25000) return true;
         return false;
     }
 
     function classifyAttachments(messages) {
-        const images = [], unsupported = [], others = [];
+        const images = [], unsupported = [], others = [], skipped = [];
+        const seen = new Set();
         for (const msg of messages) {
             if (myEmail && emailOf(hdr(msg, 'From')) === myEmail) continue; // adjuntos míos (informes) no
             for (const p of walkParts(msg.payload, [])) {
-                const isImg = (p.mimeType || '').startsWith('image/') || IMG_EXT.test(p.filename);
-                if (UNSUPPORTED_EXT.test(p.filename) || /tiff|dicom/i.test(p.mimeType || '')) unsupported.push({ msg, part: p });
-                else if (isImg && !isInlineDecoration(p)) images.push({ msg, part: p });
-                else if (!isImg) others.push({ msg, part: p });
+                const fname = p.filename || '';
+                // El mismo archivo repetido en varios mensajes del hilo (reenvíos) se baja una vez
+                const sig = fname.toLowerCase() + '|' + ((p.body && p.body.size) || 0);
+                if (fname && seen.has(sig)) continue;
+                seen.add(sig);
+                const isImg = (p.mimeType || '').startsWith('image/') || IMG_EXT.test(fname);
+                if (UNSUPPORTED_EXT.test(fname) || /tiff|dicom/i.test(p.mimeType || '')) unsupported.push({ msg, part: p });
+                else if (isImg && isInlineDecoration(p)) skipped.push({ msg, part: p });
+                else if (isImg) images.push({ msg, part: p });
+                else others.push({ msg, part: p });
             }
         }
-        return { images, unsupported, others };
+        return { images, unsupported, others, skipped };
+    }
+
+    const _decoder = document.createElement('textarea');
+    function cleanSnippet(s) {
+        _decoder.innerHTML = s;
+        return _decoder.value
+            .replace(/-{3,}\s*(forwarded message|mensaje reenviado)\s*-{3,}/ig, '')
+            .replace(/^\s*(de|from):\s*[^<]*<[^>]*>\s*/i, '')
+            .trim();
     }
 
     /** Intenta sacar el nombre del paciente desde el asunto. */
+    const titleCase = (t) => t.toLowerCase()
+        .replace(/(^|[\s'´’-])(\p{L})/gu, (m, a, c) => a + c.toUpperCase())
+        .replace(/\s(De|Del|La|Las|Los|Y)(?=\s)/g, (m, w) => ' ' + w.toLowerCase());
+
     function guessPatient(subject) {
-        let s = String(subject || '').replace(/^\s*((re|rv|fw|fwd|reenviar|reenviado)\s*:\s*)+/i, '');
+        const base = String(subject || '').replace(/^\s*((re|rv|fw|fwd|reenviar|reenviado|enc)\s*:\s*)+/i, '');
+        // 1º: el asunto viene por segmentos separados por guiones: "CENTRO - NOMBRE APELLIDOS - RX…"
+        const segs = base.split(/\s*[-–—|]\s*/).map(x => x.trim()).filter(Boolean);
+        const NOISE = /\b(rx|cbct|tac|pano|panor|btw|bite|total|periapical|tele|cefal|atm|dr|dra|orden|informe|examen|estudio|urgente|control)\b/i;
+        const nameLike = segs.filter(seg => {
+            if (/\d/.test(seg) || NOISE.test(seg) || /[.:]/.test(seg)) return false;
+            const w = seg.split(/\s+/).filter(Boolean);
+            return w.length >= 2 && w.length <= 6 && w.every(x => /^[\p{L}'´’]+$/u.test(x));
+        });
+        if (nameLike.length) {
+            nameLike.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length);
+            return titleCase(nameLike[0]);
+        }
+        let s = base;
         s = s.replace(/\b\d{1,2}\.?\d{3}\.?\d{3}\s*-\s*[\dkK]\b/g, ' ');
         const STOP = /\b(orden(es)?|solicitud(es)?|ex[aá]men(es)?|estudios?|informes?|pacientes?|pcte|pac|sr|sra|srta|dra?|doctor[a]?|cbct|cone|beam|rx|radiograf[ií]as?|panor[aá]mic[ao]s?|panorex|periapical(es)?|bite|wing|bitewings?|teler+adiograf[ií]as?|cefalom[eé]tric[ao]s?|atm|tac|scanner|im[aá]gen(es)?|adjunt[oa]s?|urgente|para|de|del|la|las|los|el|y|con|por|favor|pdf|jpg|nuev[oa]|control|maxilar|mand[ií]bula|ap|lat|derivaci[oó]n|consulta|env[ií]o|pieza|piezas|diente|dientes)\b/gi;
         s = s.replace(/\d+/g, ' ').replace(STOP, ' ').replace(/[^\p{L}\s'-]/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -146,10 +182,16 @@
                     fromEmail: emailOf(hdr(lastIn, 'From')),
                     fromName: nameOf(hdr(lastIn, 'From')),
                     date: Number(lastIn.internalDate) || Date.now(),
-                    snippet: lastIn.snippet || '',
+                    snippet: cleanSnippet(lastIn.snippet || ''),
                     patient: guessPatient(subject),
                     nImages: att.images.length,
                     nUnsupported: att.unsupported.length,
+                    attDetail: [
+                        ...att.images.map(x => '✓ ' + (x.part.filename || 'imagen sin nombre') + ' (' + Math.round(((x.part.body && x.part.body.size) || 0) / 1024) + ' KB)'),
+                        ...att.skipped.map(x => '✗ ' + (x.part.filename || 'imagen sin nombre') + ' (' + Math.round(((x.part.body && x.part.body.size) || 0) / 1024) + ' KB, parece logo)'),
+                        ...att.unsupported.map(x => '⚠ ' + x.part.filename + ' (formato no compatible)'),
+                        ...att.others.map(x => '· ' + x.part.filename),
+                    ].join('\n'),
                     answered,
                 });
             }
@@ -171,10 +213,11 @@
                 for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
                 let type = part.mimeType && part.mimeType.startsWith('image/') ? part.mimeType : '';
                 if (!type) {
-                    const ext = (part.filename.split('.').pop() || '').toLowerCase();
+                    const ext = ((part.filename || '').split('.').pop() || '').toLowerCase();
                     type = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', avif: 'image/avif' }[ext] || 'image/jpeg';
                 }
-                files.push(new File([bytes], part.filename, { type }));
+                const name = part.filename || `imagen-${files.length + 1}.${(type.split('/')[1] || 'jpg').replace('jpeg', 'jpg')}`;
+                files.push(new File([bytes], name, { type }));
             } catch (e) {
                 console.error('No se pudo bajar el adjunto', part.filename, e);
             }
@@ -381,7 +424,7 @@
                     <div class="order-snippet">${esc(o.snippet)}</div>
                 </div>
                 <div class="order-side">
-                    <span class="order-imgs" title="Imágenes adjuntas">${o.nImages} img${o.nUnsupported ? ` <em title="Formato no compatible">+${o.nUnsupported}</em>` : ''}</span>
+                    <span class="order-imgs" title="${esc(o.attDetail || 'Imágenes adjuntas')}">${o.nImages} img${o.nUnsupported ? ` <em title="Formato no compatible">+${o.nUnsupported}</em>` : ''}</span>
                     ${o.answered ? '<span class="order-done">Respondida</span>' : ''}
                     <button class="btn primary-btn" data-open="${esc(o.threadId)}">Abrir</button>
                 </div>
