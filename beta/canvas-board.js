@@ -95,6 +95,55 @@
         });
     }
 
+    // ---------- Lectura de lo que se suelta en el tablero ----------
+    const IMG_NAME = /\.(jpe?g|png|gif|bmp|webp|avif)$/i;
+    function readAllEntries(dir) {
+        return new Promise(res => {
+            const r = dir.createReader(); const out = [];
+            const next = () => r.readEntries(b => { if (!b.length) return res(out); out.push(...b); next(); }, () => res(out));
+            next();
+        });
+    }
+    async function filesFromEntry(en, limit, out) {
+        if (out.length >= limit) return out;
+        if (en.isFile) {
+            const f = await new Promise(r => en.file(r, () => r(null)));
+            if (f) out.push(f);
+        } else if (en.isDirectory) {
+            for (const c of await readAllEntries(en)) await filesFromEntry(c, limit, out);
+        }
+        return out;
+    }
+    /** URLs de imágenes arrastradas desde una página web (text/uri-list y <img> del HTML). */
+    function urlsFromDrop(uriList, html) {
+        const urls = [];
+        (uriList || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#')).forEach(u => urls.push(u));
+        if (html) {
+            try {
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                doc.querySelectorAll('img[src]').forEach(i => urls.push(i.getAttribute('src')));
+                doc.querySelectorAll('a[href]').forEach(a => { const h = a.getAttribute('href'); if (IMG_NAME.test(h.split('?')[0])) urls.push(h); });
+            } catch (e) { /* noop */ }
+        }
+        return [...new Set(urls)].filter(u => /^(https?:|data:image\/|blob:)/i.test(u)).slice(0, 40);
+    }
+    async function fetchImageUrls(urls) {
+        const files = [], failed = [];
+        for (const u of urls) {
+            const name = (u.startsWith('data:') ? 'imagen' : decodeURIComponent(u.split('?')[0].split('/').pop() || 'imagen')).slice(0, 80);
+            try {
+                const r = await fetch(u, { credentials: 'omit' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const blob = await r.blob();
+                if (!/^image\//.test(blob.type)) throw new Error('no es imagen');
+                files.push(new File([blob], IMG_NAME.test(name) ? name : name + '.' + (blob.type.split('/')[1] || 'jpg'), { type: blob.type }));
+            } catch (e) {
+                failed.push({ name, why: 'la página de origen no permite copiarla' });
+            }
+        }
+        return { files, failed };
+    }
+
     const ZMIN = 0.02, ZMAX = 16;
     const GAP = 30;
     const SHARP_LEVELS = 10;
@@ -254,7 +303,7 @@
                 dblclick: (e) => this._onDbl(e),
                 keydown: (e) => this._onKey(e),
                 keyup: (e) => { if (e.code === 'Space') { this.spaceDown = false; vp.classList.remove('cb-grab'); } },
-                dragover: (e) => { if (this._hasFiles(e)) { e.preventDefault(); vp.classList.add('cb-dragging'); } },
+                dragover: (e) => { if (this._hasDroppable(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; vp.classList.add('cb-dragging'); } },
                 dragleave: (e) => { if (e.target === vp) vp.classList.remove('cb-dragging'); },
                 drop: (e) => this._onDrop(e),
                 paste: (e) => this._onPaste(e),
@@ -388,14 +437,58 @@
         _hasFiles(e) {
             return e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
         }
+        _hasDroppable(e) {
+            const t = [...((e.dataTransfer && e.dataTransfer.types) || [])];
+            return t.includes('Files') || t.includes('text/uri-list') || t.includes('text/html');
+        }
 
-        _onDrop(e) {
-            if (!this._hasFiles(e)) return;
+        async _onDrop(e) {
+            if (!this._hasDroppable(e)) return;
             e.preventDefault();
             this.vp.classList.remove('cb-dragging');
-            const files = [...e.dataTransfer.files].filter(isImageFile);
+            const dt = e.dataTransfer;
             const at = this._toWorld(e.clientX, e.clientY);
-            this.addFiles(files, at);
+            // Todo lo del DataTransfer se lee AHORA (deja de estar disponible después del evento)
+            const files = [], dirs = [];
+            for (const item of [...(dt.items || [])]) {
+                if (item.kind !== 'file') continue;
+                const en = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+                if (en && en.isDirectory) dirs.push(en);
+                else { const f = item.getAsFile(); if (f) files.push(f); }
+            }
+            if (!files.length && !dirs.length && dt.files) files.push(...dt.files);
+            const uriList = dt.getData('text/uri-list'), html = dt.getData('text/html');
+            // Carpetas completas
+            for (const d of dirs) await filesFromEntry(d, 300, files);
+            // Desde una página web: vienen direcciones, no archivos
+            let failed = [];
+            if (!files.length) {
+                const r = await fetchImageUrls(urlsFromDrop(uriList, html));
+                files.push(...r.files);
+                failed = r.failed;
+            }
+            this._ingest(files, at, failed);
+        }
+
+        /** Agrega lo que sea imagen y avisa qué no se pudo agregar y por qué. */
+        async _ingest(files, at, failed = []) {
+            const skipped = [...failed];
+            const cand = [];
+            for (const f of files) {
+                if (/\.(tiff?|dcm|dicom)$/i.test(f.name || '') || /tiff|dicom/i.test(f.type || '')) skipped.push({ name: f.name, why: 'formato TIFF/DICOM no compatible con el navegador' });
+                else if (isImageFile(f) || IMG_NAME.test(f.name || '')) cand.push(f);
+                else skipped.push({ name: f.name || 'archivo', why: 'no es una imagen' });
+            }
+            const added = cand.length ? await this.addFiles(cand, at) : [];
+            skipped.push(...(this._lastFailed || []).map(name => ({ name, why: 'no se pudo leer la imagen' })));
+            if (skipped.length) {
+                const names = skipped.slice(0, 4).map(x => x.name).join(', ') + (skipped.length > 4 ? '…' : '');
+                const whys = [...new Set(skipped.map(x => x.why))].join('; ');
+                this._notice(`${added.length ? (added.length === 1 ? 'Se agregó 1. ' : `Se agregaron ${added.length}. `) : ''}${skipped.length > 1 ? 'No se pudieron' : 'No se pudo'} agregar ${skipped.length}: ${names} (${whys})`, false, 10000);
+            } else if (added.length > 1) {
+                this._notice(`Se agregaron ${added.length} imágenes`, false, 3000);
+            }
+            return added;
         }
 
         _onPaste(e) {
@@ -404,13 +497,12 @@
             const focusedInside = this.root.contains(ae);
             const nothingFocused = !ae || ae === document.body;
             if (!focusedInside && !(nothingFocused && this.vp.matches(':hover'))) return;
-            const files = [...(e.clipboardData ? e.clipboardData.items : [])]
-                .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
-                .map(i => i.getAsFile())
-                .filter(Boolean);
+            const cd = e.clipboardData;
+            let files = cd && cd.files && cd.files.length ? [...cd.files]
+                : [...(cd ? cd.items : [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
             if (!files.length) return;
             e.preventDefault();
-            this.addFiles(files);
+            this._ingest(files);
         }
 
         /**
@@ -419,7 +511,8 @@
          * @param {{x:number,y:number}} [at] punto del mundo donde soltar
          */
         async addFiles(files, at) {
-            files = (files || []).filter(f => f && (isImageFile(f) || (f instanceof Blob && !f.type)));
+            files = (files || []).filter(f => f && (isImageFile(f) || IMG_NAME.test(f.name || '') || (f instanceof Blob && !f.type)));
+            this._lastFailed = [];
             if (!files.length) return [];
             const wasEmpty = this.items.length === 0;
             const r = this.vp.getBoundingClientRect();
@@ -431,7 +524,7 @@
                 const key = uid();
                 const url = URL.createObjectURL(f);
                 let dim;
-                try { dim = await imageSize(url); } catch (e) { URL.revokeObjectURL(url); console.warn('Canvas: archivo no es imagen válida', f.name); continue; }
+                try { dim = await imageSize(url); } catch (e) { URL.revokeObjectURL(url); this._lastFailed.push(f.name || 'imagen'); continue; }
                 try { await Store.putImage(key, f); } catch (e) { console.error('Canvas: no se pudo guardar la imagen', e); }
                 this.urls.set(key, url);
                 const maxSide = Math.max(dim.w, dim.h);
@@ -698,11 +791,12 @@
             this._hideNotice();
         }
 
-        _notice(text) {
+        _notice(text, withUndo = true, ms = 8000) {
             this.noticeEl.querySelector('span').textContent = text;
+            this.noticeEl.querySelector('[data-undo]').style.display = withUndo ? '' : 'none';
             this.noticeEl.classList.add('show');
             clearTimeout(this._noticeT);
-            this._noticeT = setTimeout(() => this._hideNotice(), 8000);
+            this._noticeT = setTimeout(() => this._hideNotice(), ms);
         }
         _hideNotice() { clearTimeout(this._noticeT); this.noticeEl.classList.remove('show'); }
 

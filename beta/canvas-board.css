@@ -312,6 +312,7 @@ body.ws-docked footer { display: none; }
 .cb-adjust-head { font-size: 0.78rem; color: #bfdbfe; }
 .cb-adjust-head:empty { display: none; }
 .cb-notice {
+    max-width: calc(100% - 40px);
     position: absolute;
     left: 50%;
     bottom: 14px;
