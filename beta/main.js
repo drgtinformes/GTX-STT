@@ -1435,6 +1435,9 @@ async function startSonioxRecording() {
             let interim = '';
             for (const tk of tokens) {
                 if (!tk.text) continue;
+                // Soniox envía marcas especiales: <end> (fin de frase, por enable_endpoint_detection)
+                // y <fin> (fin de finalización manual). No son texto dictado.
+                if (tk.text === '<end>' || tk.text === '<fin>') continue;
                 if (tk.is_final) sonioxSessionFinal += tk.text;   // token confirmado
                 else interim += tk.text;                          // hipótesis provisional
             }
