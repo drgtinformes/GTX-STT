@@ -191,3 +191,13 @@ body.ws-docked .header-top { flex-wrap: wrap; row-gap: 6px; }
 .sender-n { color: var(--text-secondary); font-size: 0.75rem; white-space: nowrap; }
 .senders-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .senders-actions .btn { padding: 4px 10px; font-size: 0.78rem; }
+
+/* Revisor con IA */
+.revisor-item.ia { border-left-color: #a855f7; }
+.revisor-item.ia.alta { border-left-color: #ef4444; }
+.revisor-item.done { opacity: 0.55; }
+.rv-tag { display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 6px; background: rgba(168, 85, 247, 0.25); color: #e9d5ff; margin-right: 4px; vertical-align: 1px; }
+.rv-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.rv-actions button { border: 1px solid var(--glass-border); background: rgba(255, 255, 255, 0.06); color: var(--text-primary); border-radius: 7px; padding: 3px 9px; font: 500 0.76rem 'Outfit', sans-serif; cursor: pointer; }
+.rv-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.rv-actions button:disabled { cursor: default; }

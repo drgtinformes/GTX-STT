@@ -174,17 +174,65 @@
     }
 
     let disabledSession = false;
+
+    const TIPO_IA = {
+        concordancia: 'Concordancia', no_dictado: 'No dictado', omision: 'Omisión', contradiccion: 'Contradicción',
+        lateralidad: 'Lateralidad', transcripcion: 'Transcripción', otro: 'Revisar',
+    };
+
+    /** Línea (0-based) donde aparece la cita dentro del texto, o -1. */
+    function lineaDe(text, cita) {
+        if (!cita) return -1;
+        let i = text.indexOf(cita);
+        if (i < 0) i = norm(text).indexOf(norm(cita)); // aproximado si cambian tildes/espacios
+        if (i < 0) return -1;
+        return text.slice(0, i).split('\n').length - 1;
+    }
+
+    /** Observaciones del revisor con IA para este texto (espera hasta 15 s). */
+    async function observacionesIA(text) {
+        const IA = window.GTXRevisorIA;
+        if (!IA || !IA.enabledFor(text)) return { items: [], nota: '' };
+        if (!IA.listo(text) && window.GTXToast) window.GTXToast('Revisando el informe con IA…', 'info', 2500);
+        try {
+            const r = await IA.obtener(text, 15000);
+            const lines = text.split('\n');
+            const items = r.observaciones.map(o => {
+                const line = lineaDe(text, o.cita);
+                return {
+                    ia: true, o, sev: o.gravedad, line,
+                    msg: `${TIPO_IA[o.tipo] || 'Revisar'}: ${o.mensaje}`,
+                    excerpt: o.cita || (line >= 0 ? (lines[line] || '').trim().slice(0, 140) : ''),
+                };
+            });
+            return { items, nota: '' };
+        } catch (e) {
+            console.warn('Revisor IA:', e);
+            return { items: [], nota: `La revisión con IA no respondió (${e.message}); se muestran solo las reglas.` };
+        }
+    }
+
     /** Devuelve true si se puede continuar. */
-    function revisar(text) {
-        if (disabledSession) return Promise.resolve(true);
+    async function revisar(text) {
+        if (disabledSession) return true;
         const issues = analizar(text);
-        if (!issues.length) return Promise.resolve(true);
+        const ia = await observacionesIA(text);
+        issues.push(...ia.items);
+        if (!issues.length) {
+            if (ia.nota && window.GTXToast) window.GTXToast(ia.nota, 'warn', 6000);
+            return true;
+        }
         const m = ensureModal();
         const nAlta = issues.filter(x => x.sev === 'alta').length;
-        m.querySelector('.revisor-desc').textContent = `Encontré ${issues.length} punto(s) para revisar${nAlta ? ` (${nAlta} importante${nAlta > 1 ? 's' : ''})` : ''}. Haz clic en uno para ir a esa línea.`;
+        m.querySelector('.revisor-desc').textContent = `Encontré ${issues.length} punto(s) para revisar${nAlta ? ` (${nAlta} importante${nAlta > 1 ? 's' : ''})` : ''}. Haz clic en uno para ir a esa línea.` + (ia.nota ? ' ' + ia.nota : '');
         m.querySelector('.revisor-list').innerHTML = issues.map((x, k) => `
-            <div class="revisor-item ${x.sev}" data-k="${k}" style="cursor:pointer">
-                ${esc(x.msg)}<span class="where">Línea ${x.line + 1}: ${esc(x.excerpt)}</span>
+            <div class="revisor-item ${x.sev} ${x.ia ? 'ia' : ''}" data-k="${k}" style="cursor:pointer">
+                ${x.ia ? '<span class="rv-tag">IA</span> ' : ''}${esc(x.msg)}
+                <span class="where">${x.line >= 0 ? 'Línea ' + (x.line + 1) + ': ' : ''}${esc(x.excerpt)}</span>
+                ${x.ia ? `<span class="rv-actions">
+                    ${x.o.reemplazo ? `<button type="button" data-apply="${k}" title="Reemplazar por: ${esc(x.o.reemplazo)}">Aplicar: “${esc(x.o.reemplazo.slice(0, 60))}”</button>` : ''}
+                    <button type="button" data-noerr="${k}" title="No volver a marcar esto">No es error</button>
+                </span>` : ''}
             </div>`).join('');
         m.querySelector('.revisor-off').checked = false;
         m.classList.remove('hidden');
@@ -196,10 +244,39 @@
                 resolve(val);
             };
             const onClick = (e) => {
+                const ap = e.target.closest('[data-apply]');
+                if (ap) {
+                    const x = issues[Number(ap.dataset.apply)];
+                    const ta = document.getElementById('transcription');
+                    if (ta && x.o.cita && ta.value.includes(x.o.cita)) {
+                        ta.value = ta.value.replace(x.o.cita, x.o.reemplazo);
+                        ta.dispatchEvent(new Event('input', { bubbles: true }));
+                        ap.closest('.revisor-item').classList.add('done');
+                        ap.textContent = 'Aplicado ✓';
+                        ap.disabled = true;
+                    } else if (window.GTXToast) {
+                        window.GTXToast('No encontré ese texto exacto; corrígelo a mano.', 'warn');
+                    }
+                    return;
+                }
+                const ne = e.target.closest('[data-noerr]');
+                if (ne) {
+                    const x = issues[Number(ne.dataset.noerr)];
+                    if (window.GTXRevisorIA) window.GTXRevisorIA.agregarExcepcion(x.o);
+                    const it = ne.closest('.revisor-item');
+                    it.classList.add('done');
+                    ne.textContent = 'No se volverá a marcar ✓';
+                    ne.disabled = true;
+                    return;
+                }
                 const b = e.target.closest('[data-rv]');
                 if (b) { done(b.dataset.rv === 'go'); return; }
                 const it = e.target.closest('.revisor-item');
-                if (it) { const x = issues[Number(it.dataset.k)]; done(false); setTimeout(() => selectLine(x.line), 50); }
+                if (it) {
+                    const x = issues[Number(it.dataset.k)];
+                    done(false);
+                    if (x.line >= 0) setTimeout(() => selectLine(x.line), 50);
+                }
             };
             m.addEventListener('click', onClick);
         });

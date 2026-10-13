@@ -1,3 +1,6 @@
+// Migración (oct-2026): Claude Haiku 4.5 fue reemplazado por Haiku 5.5 (más capaz y ~10× más barato)
+try { if (localStorage.getItem('formatter_model') === 'claude-haiku-4-5') localStorage.setItem('formatter_model', 'claude-haiku-5-5'); } catch (e) { /* noop */ }
+
 // Diccionario por defecto (Expandido V2)
 const defaultCorrectionsDict = {
     // === ANATOMÍA GENERAL ===
@@ -1986,7 +1989,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek Flash' };
+    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-5-5': 'Claude Haiku 5.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek Flash' };
     const nombre = NOMBRES_MODELO[fm] || (fm.startsWith('claude') ? 'Claude' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
@@ -2810,9 +2813,9 @@ aiProcessBtn.addEventListener('click', async () => {
             // FALLBACK: si se agotó la cuota gratis de Gemini y hay clave de Anthropic,
             // procesamos este informe con Claude Haiku sin interrumpir al usuario.
             if (_esCuota && localStorage.getItem('anthropic_api_key')) {
-                console.info('[fallback] Cuota de Gemini agotada -> procesando con Claude Haiku 4.5.');
+                console.info('[fallback] Cuota de Gemini agotada -> procesando con Claude Haiku 5.5.');
                 aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Cuota Gemini agotada -> Haiku...';
-                const _ok = await procesarConClaudeFallback(textToProcess, 'claude-haiku-4-5');
+                const _ok = await procesarConClaudeFallback(textToProcess, 'claude-haiku-5-5');
                 if (_ok) return; // listo vía fallback (el finally restaura el botón)
                 throw new Error('Se agotó la cuota de Gemini y el fallback a Haiku no devolvió contenido. Revisa tu clave de Anthropic.');
             }
@@ -2987,6 +2990,7 @@ function ocultarPanelCambios() {
 }
 
 function mostrarPanelCambios(cambios, dictado, informe) {
+    if (window.GTXRevisorIA) window.GTXRevisorIA.prefetch(dictado);
     const panel = document.getElementById('ai-changes-panel');
     const lista = document.getElementById('ai-changes-list');
     const titulo = document.getElementById('ai-changes-title');
@@ -3529,6 +3533,8 @@ async function prepareDocument() {
     if (window.GTXRevisor) {
         const seguir = await window.GTXRevisor.revisar(text);
         if (!seguir) return null;
+        text = transcriptionArea.value.trim();   // pudo cambiar con "Aplicar" del revisor
+        finalTranscript = text;
     }
 
     const templateId = templateSelect.value;
