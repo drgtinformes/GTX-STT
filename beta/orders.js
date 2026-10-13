@@ -16,6 +16,7 @@
     const QUERY_KEY = 'gtx_orders_query';
     const ACTIVE_KEY = 'gtx_active_order';
     const SENDER_TPL_KEY = 'gtx_sender_templates';
+    const SENDERS_KEY = 'gtx_orders_senders';   // { newDefault: bool, list: { email: { name, show } } }
     const DEFAULT_QUERY = 'in:inbox -from:me has:attachment newer_than:7d -category:promotions -category:social';
     const IMG_EXT = /\.(jpe?g|png|gif|bmp|webp|avif)$/i;
     const UNSUPPORTED_EXT = /\.(tiff?|dcm|dicom)$/i;
@@ -228,6 +229,40 @@
         return files;
     }
 
+    // ---------- Remitentes visibles ----------
+    function loadSenders() {
+        try {
+            const v = JSON.parse(safeGet(SENDERS_KEY) || 'null');
+            if (v && v.list) return { newDefault: v.newDefault !== false, list: v.list };
+        } catch (e) { /* noop */ }
+        return { newDefault: true, list: {} };
+    }
+    function saveSenders(v) { safeSet(SENDERS_KEY, JSON.stringify(v)); }
+    /** Agrega a la lista los remitentes nuevos (visibles u ocultos según la preferencia). */
+    function registerSenders(list) {
+        const v = loadSenders();
+        let changed = false;
+        for (const o of list) {
+            if (!o.fromEmail) continue;
+            const e = v.list[o.fromEmail];
+            if (!e) { v.list[o.fromEmail] = { name: o.fromName, show: v.newDefault }; changed = true; }
+            else if (o.fromName && e.name !== o.fromName) { e.name = o.fromName; changed = true; }
+        }
+        if (changed) saveSenders(v);
+    }
+    function isShown(o) {
+        const v = loadSenders();
+        const e = v.list[o.fromEmail];
+        return e ? e.show !== false : v.newDefault;
+    }
+    function setSenderShown(email, show) {
+        const v = loadSenders();
+        if (!v.list[email]) v.list[email] = { name: email, show };
+        v.list[email].show = show;
+        saveSenders(v);
+    }
+    const visibleOrders = () => orders.filter(isShown);
+
     // ---------- Orden activa ----------
     function setActive(o) {
         active = o ? { threadId: o.threadId, subject: o.subject, from: o.from, fromEmail: o.fromEmail, fromName: o.fromName, patient: o.patient } : null;
@@ -302,7 +337,7 @@
     }
 
     // ---------- UI ----------
-    let modal, listEl, statusEl, showAnsweredEl, queryEl, chipEl, badgeEl, btnEl;
+    let modal, listEl, statusEl, showAnsweredEl, queryEl, chipEl, badgeEl, btnEl, sendersEl;
 
     function buildUI() {
         // Botón en el encabezado
@@ -334,6 +369,17 @@
                     <div class="orders-list"></div>
                     <div class="orders-footer">
                         <label class="orders-check"><input type="checkbox" class="orders-show-answered"> Mostrar también las ya respondidas</label>
+                        <details class="orders-senders">
+                            <summary>Remitentes <span class="senders-count"></span></summary>
+                            <p class="small-text">Marca los remitentes cuyos correos son órdenes para informar. Los desmarcados no aparecen en la lista ni en el contador.</p>
+                            <div class="senders-list"></div>
+                            <div class="senders-actions">
+                                <label class="orders-check"><input type="checkbox" class="senders-new"> Mostrar automáticamente remitentes nuevos</label>
+                                <span style="flex:1"></span>
+                                <button class="btn secondary-btn" data-senders="all">Marcar todos</button>
+                                <button class="btn secondary-btn" data-senders="none">Desmarcar todos</button>
+                            </div>
+                        </details>
                         <details class="orders-advanced">
                             <summary>Búsqueda avanzada</summary>
                             <p class="small-text">Filtro de Gmail usado para listar las órdenes:</p>
@@ -350,6 +396,24 @@
         statusEl = modal.querySelector('.orders-status');
         showAnsweredEl = modal.querySelector('.orders-show-answered');
         queryEl = modal.querySelector('.orders-query');
+        sendersEl = modal.querySelector('.orders-senders');
+        const afterSendersChange = () => { renderStatus(); renderList(); renderSenders(); updateBadge(); };
+        sendersEl.addEventListener('change', (e) => {
+            const cb = e.target.closest('[data-sender]');
+            if (cb) { setSenderShown(cb.dataset.sender, cb.checked); afterSendersChange(); return; }
+            if (e.target.classList.contains('senders-new')) {
+                const v = loadSenders(); v.newDefault = e.target.checked; saveSenders(v); renderSenders();
+            }
+        });
+        sendersEl.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-senders]');
+            if (!b) return;
+            e.preventDefault();
+            const v = loadSenders();
+            Object.values(v.list).forEach(x => { x.show = b.dataset.senders === 'all'; });
+            saveSenders(v);
+            afterSendersChange();
+        });
         queryEl.value = safeGet(QUERY_KEY) || DEFAULT_QUERY;
         modal.querySelector('.orders-close').addEventListener('click', closeModal);
         modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
@@ -358,6 +422,15 @@
         queryEl.addEventListener('change', () => { safeSet(QUERY_KEY, queryEl.value.trim() || DEFAULT_QUERY); refresh(true); });
         modal.querySelector('.orders-query-reset').addEventListener('click', () => { queryEl.value = DEFAULT_QUERY; safeDel(QUERY_KEY); refresh(true); });
         listEl.addEventListener('click', (e) => {
+            const h = e.target.closest('[data-hide]');
+            if (h) {
+                const email = h.dataset.hide;
+                const o = orders.find(x => x.fromEmail === email);
+                setSenderShown(email, false);
+                renderStatus(); renderList(); renderSenders(); updateBadge();
+                toast(`Ocultos los correos de ${o ? o.fromName : email}. Puedes volver a mostrarlos en "Remitentes".`, 'info', 6000);
+                return;
+            }
             const b = e.target.closest('[data-open]');
             if (!b) return;
             const o = orders.find(x => x.threadId === b.dataset.open);
@@ -408,9 +481,9 @@
 
     function renderList() {
         const show = showAnsweredEl.checked;
-        const list = orders.filter(o => show || !o.answered);
+        const list = visibleOrders().filter(o => show || !o.answered);
         if (!list.length) {
-            listEl.innerHTML = `<div class="orders-empty">${orders.length ? 'No hay órdenes pendientes 🎉' : 'Sin correos que coincidan con el filtro.'}</div>`;
+            listEl.innerHTML = `<div class="orders-empty">${orders.length ? 'No hay órdenes pendientes de los remitentes seleccionados 🎉' : 'Sin correos que coincidan con el filtro.'}</div>`;
             return;
         }
         listEl.innerHTML = list.map(o => `
@@ -419,6 +492,7 @@
                     <div class="order-top">
                         <span class="order-patient">${esc(o.patient || o.subject)}</span>
                         <span class="order-date">${esc(relTime(o.date))}</span>
+                        <button class="order-hide" data-hide="${esc(o.fromEmail)}" title="No mostrar más correos de ${esc(o.fromName)} (${esc(o.fromEmail)})"><i data-lucide="eye-off"></i></button>
                     </div>
                     <div class="order-from">${esc(o.fromName)}${o.patient ? ' · ' + esc(o.subject) : ''}</div>
                     <div class="order-snippet">${esc(o.snippet)}</div>
@@ -429,11 +503,36 @@
                     <button class="btn primary-btn" data-open="${esc(o.threadId)}">Abrir</button>
                 </div>
             </div>`).join('');
+        if (window.lucide) window.lucide.createIcons({ root: listEl });
+    }
+
+    function renderStatus() {
+        if (!statusEl) return;
+        const n = visibleOrders().filter(o => !o.answered).length;
+        const hidden = orders.filter(o => !o.answered && !isShown(o)).length;
+        statusEl.textContent = `${n} pendiente(s) · cuenta ${myEmail}` + (hidden ? ` · ${hidden} oculta(s) por remitente` : '');
+    }
+
+    function renderSenders() {
+        if (!sendersEl) return;
+        const v = loadSenders();
+        const counts = {};
+        orders.forEach(o => { counts[o.fromEmail] = (counts[o.fromEmail] || 0) + 1; });
+        const emails = Object.keys(v.list).sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b));
+        sendersEl.querySelector('.senders-count').textContent = `${emails.filter(e => v.list[e].show !== false).length} de ${emails.length} visibles`;
+        sendersEl.querySelector('.senders-new').checked = v.newDefault;
+        sendersEl.querySelector('.senders-list').innerHTML = emails.length ? emails.map(e => `
+            <label class="sender-row">
+                <input type="checkbox" data-sender="${esc(e)}" ${v.list[e].show !== false ? 'checked' : ''}>
+                <span class="sender-name">${esc(v.list[e].name || e)}</span>
+                <span class="sender-email">${esc(e)}</span>
+                <span class="sender-n">${counts[e] ? counts[e] + ' correo(s)' : ''}</span>
+            </label>`).join('') : '<p class="small-text">Aún no hay remitentes. Presiona Actualizar.</p>';
     }
 
     function updateBadge() {
         if (!badgeEl) return;
-        const n = orders.filter(o => !o.answered).length;
+        const n = visibleOrders().filter(o => !o.answered).length;
         badgeEl.textContent = n;
         badgeEl.hidden = n === 0;
     }
@@ -447,9 +546,10 @@
             const ok = await ensureAuth(interactive);
             if (!ok) { if (statusEl) statusEl.textContent = 'Inicia sesión en Gmail para ver las órdenes.'; return; }
             orders = await fetchOrders();
-            const n = orders.filter(o => !o.answered).length;
-            if (statusEl) statusEl.textContent = `${n} pendiente(s) · cuenta ${myEmail}`;
+            registerSenders(orders);
+            renderStatus();
             renderList();
+            renderSenders();
             updateBadge();
         } catch (e) {
             console.error('Órdenes:', e);
@@ -496,6 +596,7 @@
         refresh,
         openOrder,
         _guessPatient: guessPatient,
+        _senders: loadSenders,
         _classify: classifyAttachments,
     };
 })();

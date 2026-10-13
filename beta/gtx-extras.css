@@ -172,3 +172,22 @@ body.ws-docked .header-top { flex-wrap: wrap; row-gap: 6px; }
     max-height: calc(100vh - 32px);
     overflow-y: auto;
 }
+
+/* Remitentes visibles en la bandeja */
+.order-top { align-items: center; }
+.order-hide {
+    background: transparent; border: 0; color: var(--text-secondary); cursor: pointer;
+    padding: 2px; border-radius: 6px; display: inline-flex; opacity: 0.55;
+}
+.order-hide:hover { opacity: 1; background: rgba(255, 255, 255, 0.08); color: #fca5a5; }
+.order-hide svg { width: 15px; height: 15px; }
+.orders-senders summary, .orders-advanced summary { cursor: pointer; }
+.senders-count { font-size: 0.78rem; color: var(--text-secondary); margin-left: 6px; }
+.senders-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; margin: 6px 0; padding: 6px; border-radius: 8px; background: rgba(15, 23, 42, 0.45); border: 1px solid var(--glass-border); }
+.sender-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 0.84rem; }
+.sender-row:hover { background: rgba(255, 255, 255, 0.05); }
+.sender-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sender-email { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
+.sender-n { color: var(--text-secondary); font-size: 0.75rem; white-space: nowrap; }
+.senders-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.senders-actions .btn { padding: 4px 10px; font-size: 0.78rem; }
