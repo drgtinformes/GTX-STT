@@ -51,6 +51,31 @@
         getImage: (k) => idb('images', 'readonly', s => s.get(k)),
         putImage: (k, blob) => idb('images', 'readwrite', s => s.put(blob, k)),
         delImage: (k) => idb('images', 'readwrite', s => s.delete(k)),
+        allBoards: () => openDB().then(d => new Promise((resolve, reject) => {
+            const out = [];
+            const tx = d.transaction('boards', 'readonly');
+            const req = tx.objectStore('boards').openCursor();
+            req.onsuccess = () => { const c = req.result; if (c) { out.push({ id: c.key, data: c.value }); c.continue(); } };
+            tx.oncomplete = () => resolve(out);
+            tx.onerror = () => reject(tx.error);
+        })),
+        /** Borra tableros (y sus imágenes) sin uso hace más de `days` días. */
+        async prune(days, keepIds = []) {
+            const limit = Date.now() - days * 86400000;
+            const boards = await Store.allBoards();
+            const usedKeys = new Set();
+            const toDelete = [];
+            for (const b of boards) {
+                const old = b.data && b.data.updated && b.data.updated < limit && !keepIds.includes(b.id);
+                if (old) toDelete.push(b);
+                else ((b.data && b.data.items) || []).forEach(it => usedKeys.add(it.key));
+            }
+            for (const b of toDelete) {
+                for (const it of (b.data.items || [])) if (!usedKeys.has(it.key)) await Store.delImage(it.key).catch(() => {});
+                await Store.delBoard(b.id).catch(() => {});
+            }
+            return toDelete.length;
+        },
     };
 
     const CHANNEL_NAME = 'gtx-canvas';
@@ -122,6 +147,7 @@
                     <button class="cb-btn" data-act="arrange" title="Ordenar automático (A)"><i data-lucide="layout-grid"></i><span>Ordenar</span></button>
                     <button class="cb-btn" data-act="fit" title="Ajustar todo a pantalla (F)"><i data-lucide="maximize"></i><span>Ajustar</span></button>
                     <span class="cb-zoom" title="Zoom del tablero">100%</span>
+                    <span class="cb-title" title=""></span>
                     <span class="cb-spacer"></span>
                     <button class="cb-btn cb-btn-danger" data-act="clear" title="Quitar todas las imágenes del tablero"><i data-lucide="trash-2"></i><span>Limpiar</span></button>
                     <button class="cb-btn cb-icon-only" data-act="help" title="Atajos"><i data-lucide="circle-help"></i></button>
@@ -170,6 +196,8 @@
             this.adjust = root.querySelector('.cb-adjust');
             this.helpEl = root.querySelector('.cb-help');
             this.zoomEl = root.querySelector('.cb-zoom');
+            this.titleEl = root.querySelector('.cb-title');
+            this.title = '';
             this.fileInput = root.querySelector('.cb-file');
             if (window.lucide) window.lucide.createIcons({ root });
         }
@@ -260,9 +288,20 @@
             this.root.remove();
         }
 
+        setTitle(t) {
+            this.title = t || '';
+            this.titleEl.textContent = this.title;
+            this.titleEl.title = this.title;
+        }
+
         // ----- carga / guardado -----
-        async load(boardId) {
+        async load(boardId, title) {
+            if (this._saveT) await this._flushSave();   // guardar el tablero anterior antes de cambiar
             if (boardId) this.boardId = boardId;
+            for (const url of this.urls.values()) URL.revokeObjectURL(url);
+            this.urls.clear();
+            this.view = { x: 0, y: 0, z: 1 };
+            this.focusPrev = null;
             let data = null;
             try { data = await Store.getBoard(this.boardId); } catch (e) { console.error('Canvas: no se pudo leer el tablero', e); }
             for (const el of this.els.values()) el.remove();
@@ -280,6 +319,7 @@
                 }
                 if (data.view) this.view = data.view;
             }
+            this.setTitle(title !== undefined ? title : ((data && data.title) || ''));
             this.items.forEach(it => this._ensureEl(it));
             this._renderAll();
             if (this.items.length && !(data && data.view)) this.fit();
@@ -293,7 +333,7 @@
         _flushSave() {
             clearTimeout(this._saveT);
             this._saveT = null;
-            const data = { items: this.items.map(it => ({ ...it })), view: { ...this.view }, updated: Date.now() };
+            const data = { items: this.items.map(it => ({ ...it })), view: { ...this.view }, title: this.title || '', updated: Date.now() };
             return Store.putBoard(this.boardId, data).catch(e => console.error('Canvas: no se pudo guardar', e));
         }
 

@@ -149,6 +149,41 @@ const defaultCorrectionsDict = {
 
 let correctionsDict = { ...defaultCorrectionsDict };
 
+// === Guardado del diccionario con VERSIONES (beta oct-2026) ===
+// Cada vez que el diccionario cambia, la versión anterior se guarda (últimas 20) para
+// poder volver atrás desde el modal del Diccionario si algo se "envenena".
+function guardarDiccionario(motivo) {
+    try {
+        // Sin diccionario guardado aún, la versión "anterior" es el diccionario por defecto
+        const prev = localStorage.getItem('custom_dict') || JSON.stringify(defaultCorrectionsDict);
+        const next = JSON.stringify(correctionsDict);
+        if (prev !== next) {
+            let vers = [];
+            try { vers = JSON.parse(localStorage.getItem('custom_dict_versions') || '[]') || []; } catch (e) { vers = []; }
+            let n = 0;
+            try { n = Object.keys(JSON.parse(prev)).length; } catch (e) {}
+            vers.unshift({ ts: Date.now(), motivo: motivo || 'cambio', n, dict: prev });
+            localStorage.setItem('custom_dict_versions', JSON.stringify(vers.slice(0, 20)));
+        }
+        localStorage.setItem('custom_dict', next);
+    } catch (e) {
+        console.error('No se pudo guardar el diccionario', e);
+    }
+}
+
+/** Modelo Gemini rápido y vigente (según la lista que devuelve la API), para tareas cortas. */
+function modeloGeminiRapido() {
+    try {
+        const c = JSON.parse(localStorage.getItem('gemini_models_cache') || 'null');
+        const names = ((c && c.data && c.data.models) || []).map(m => String(m.name || '').replace(/^models\//, ''));
+        for (const pref of ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-2.5-flash', 'gemini-flash-latest']) {
+            const hit = names.find(n => n === pref) || names.find(n => n.startsWith(pref + '-') && !/preview|exp|lite|image|tts|audio|live/.test(n));
+            if (hit) return hit;
+        }
+    } catch (e) { /* noop */ }
+    return 'gemini-flash-latest';
+}
+
 // Cargar y FUSIONAR diccionario desde localStorage si existe
 const savedDict = localStorage.getItem('custom_dict');
 if (savedDict) {
@@ -180,7 +215,7 @@ const ENTRADAS_DICCIONARIO_RETIRADAS = {
         if (correctionsDict[k] === v) { delete correctionsDict[k]; cambiado = true; }
     }
     if (cambiado && savedDict) {
-        try { localStorage.setItem('custom_dict', JSON.stringify(correctionsDict)); } catch (e) {}
+        guardarDiccionario('saneamiento automático');
     }
 })();
 
@@ -250,6 +285,22 @@ if (savedMeta) {
     }
 }
 
+
+// Prompt de sistema del formateador (antes estaba duplicado para Claude y para Gemini)
+function construirPromptSistema(textToProcess) {
+    let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+    
+    basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
+
+    // Inyectar la fecha real del sistema para que el modelo NO la invente
+    const _hoy = new Date();
+    const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+    basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+    basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
+
+    return basePrompt;
+}
 
 // === GESTOR DE PLANTILLAS ===
 class TemplateManager {
@@ -1349,6 +1400,12 @@ let sonioxBaseTranscript = '';
 let sonioxSessionFinal = '';
 
 // Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
+// Quita las marcas de control de Soniox (<end>, <fin>) que no son texto dictado.
+function limpiarMarcasSoniox(txt) {
+    if (!txt || txt.indexOf('<') === -1) return txt;
+    return txt.replace(/\s*<\/?\s*(end|fin)\s*>/gi, '').replace(/ {2,}/g, ' ');
+}
+
 async function getSonioxToken() {
     const proxyUrl = getProxyUrl('soniox_proxy_url');
     if (proxyUrl) {
@@ -1441,6 +1498,9 @@ async function startSonioxRecording() {
                 if (tk.is_final) sonioxSessionFinal += tk.text;   // token confirmado
                 else interim += tk.text;                          // hipótesis provisional
             }
+            // Por si la marca llega pegada a otro texto o partida en varios tokens
+            sonioxSessionFinal = limpiarMarcasSoniox(sonioxSessionFinal);
+            interim = limpiarMarcasSoniox(interim);
 
             // Comprometido = texto previo (base) + corrección del acumulado final de Soniox.
             const committed = applyCorrections(sonioxSessionFinal.trim());
@@ -2019,7 +2079,7 @@ function renderDict() {
             const wordToRemove = e.currentTarget.getAttribute('data-word');
             delete correctionsDict[wordToRemove];
             delete correctionsMeta[wordToRemove];
-            localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+            guardarDiccionario('eliminado: ' + wordToRemove);
             localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
             renderDict();
         });
@@ -2046,7 +2106,7 @@ addDictBtn.addEventListener('click', () => {
 
     correctionsDict[wrong] = right;
     delete correctionsMeta[wrong]; // Quitar marca automática si el usuario lo define a mano
-    localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+    guardarDiccionario('agregado: ' + wrong);
     localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
     
     dictWrongInput.value = '';
@@ -2078,7 +2138,7 @@ importFile.addEventListener('change', (e) => {
         try {
             const importedDict = JSON.parse(event.target.result);
             correctionsDict = { ...correctionsDict, ...importedDict };
-            localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+            guardarDiccionario('importación de archivo');
             renderDict();
             alert("Diccionario importado y fusionado correctamente.");
         } catch (error) {
@@ -2308,20 +2368,7 @@ aiProcessBtn.addEventListener('click', async () => {
         aiProcessBtn.disabled = true;
 
         try {
-            function buildDynamicSystemPrompt() {
-                let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-                
-                basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
-
-                // Inyectar la fecha real del sistema para que el modelo NO la invente
-                const _hoy = new Date();
-                const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-                const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
-                basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-                basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
-
-                return basePrompt;
-            }
+            function buildDynamicSystemPrompt() { return construirPromptSistema(textToProcess); }
 
             // Prompt caching: el prompt estable (SYSTEM_PROMPT) va en un bloque cacheable
             // (se paga ~10% al reusarlo); la parte dinámica (correcciones + fecha) va aparte
@@ -2677,9 +2724,7 @@ aiProcessBtn.addEventListener('click', async () => {
                     'gemini-flash-latest',
                     'gemini-2.5-flash',
                     'gemini-2.0-flash',
-                    'gemini-2.5-flash-lite',
-                    'gemini-1.5-flash-latest',
-                    'gemini-1.5-flash'
+                    'gemini-2.5-flash-lite'
                 ];
                 defaultPriority.forEach(pName => {
                     if (!priorityOrder.includes(pName)) {
@@ -2711,20 +2756,7 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         // Función para armar el prompt de sistema dinámico incluyendo las correcciones
-        function buildDynamicSystemPrompt() {
-            let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-            
-            basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
-
-            // Inyectar la fecha real del sistema para que el modelo NO la invente
-            const _hoy = new Date();
-            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
-            basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
-
-            return basePrompt;
-        }
+        function buildDynamicSystemPrompt() { return construirPromptSistema(textToProcess); }
 
         const payload = {
             systemInstruction: {
@@ -3493,6 +3525,12 @@ async function prepareDocument() {
         localStorage.setItem(AUTOSAVE_KEY, text);
     }
 
+    // Revisor clínico: alertas antes de generar (no cambia el texto; el usuario decide)
+    if (window.GTXRevisor) {
+        const seguir = await window.GTXRevisor.revisar(text);
+        if (!seguir) return null;
+    }
+
     const templateId = templateSelect.value;
     const templateData = templateManager.getTemplate(templateId);
     
@@ -4170,8 +4208,11 @@ if (sendGmailBtn) {
             // Extraeremos el nombre del área de transcripción o de lo que prepareDocument procesó.
             // Una mejor forma es que prepareDocument devuelva también el nombre procesado.
             
-            // Buscamos el hilo del paciente usando su nombre completo
-            const thread = await findPatientThread(docData.patientName); 
+            // Si hay una orden abierta desde la bandeja, se responde a ESE hilo.
+            // Si no, se busca el hilo del paciente por su nombre.
+            let thread = null;
+            if (window.GTXOrders && window.GTXOrders.active) thread = await window.GTXOrders.getActiveThread();
+            if (!thread) thread = await findPatientThread(docData.patientName);
 
             if (!thread) {
                 const info = (typeof lastGmailSearchInfo !== 'undefined') ? lastGmailSearchInfo : {};
@@ -4205,6 +4246,7 @@ if (sendGmailBtn) {
 
             // 5. Enviar respuesta
             await sendReplyWithAttachment(thread, docData.blob, docData.fileNameBase + ".docx");
+            if (window.GTXOrders) window.GTXOrders.onSent(thread, templateSelect.value);
 
             alert("¡Informe enviado con éxito por Gmail!");
             sendGmailBtn.innerHTML = '<i data-lucide="check"></i> Enviado';
@@ -5585,14 +5627,12 @@ if (visionAnalyzeBtn) {
                 }
 
                 const priorityOrder = [
+                    'gemini-3.5-flash',
+                    'gemini-3-flash',
+                    'gemini-flash-latest',
                     'gemini-2.5-flash',
-                    'gemini-2.0-flash',
-                    'gemini-2.0-flash-exp',
-                    'gemini-1.5-pro',
-                    'gemini-1.5-pro-latest',
-                    'gemini-1.5-flash',
-                    'gemini-1.5-flash-latest',
-                    'gemini-1.5-flash-8b'
+                    'gemini-2.5-pro',
+                    'gemini-2.0-flash'
                 ];
 
                 priorityOrder.forEach(pName => {
@@ -5779,7 +5819,13 @@ function updateSyncIndicator(state) {
     const iconSpan = indicator.querySelector('.indicator-icon');
     const textSpan = indicator.querySelector('.indicator-text');
 
-    if (state === 'idle') {
+    const nPend = (state === 'idle' && window.GTXDictReview) ? window.GTXDictReview.count() : 0;
+    if (state === 'idle' && nPend > 0) {
+        indicator.className = 'ai-sync-indicator pending';
+        iconSpan.innerHTML = '<i data-lucide="list-checks"></i>';
+        textSpan.textContent = `${nPend} corrección${nPend === 1 ? '' : 'es'} por revisar`;
+        indicator.title = 'Clic para revisar las correcciones aprendidas';
+    } else if (state === 'idle') {
         iconSpan.innerHTML = '<i data-lucide="sparkles"></i>';
         textSpan.textContent = 'Inteligencia al día';
     } else if (state === 'learning') {
@@ -5868,7 +5914,7 @@ Editado: "${edited}"`;
             generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
         };
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modeloGeminiRapido()}:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -5879,30 +5925,27 @@ Editado: "${edited}"`;
             const resultText = data.candidates[0].content.parts[0].text;
             const newCorrections = JSON.parse(resultText);
             
+            // Ya NO se agregan directo al diccionario: quedan como PROPUESTAS que el usuario
+            // aprueba o rechaza en el modal del Diccionario (evita aprender "basura").
             let addedCount = 0;
-            for (const [wrong, right] of Object.entries(newCorrections)) {
+            const pend = (window.GTXDictReview && window.GTXDictReview.loadPending()) || {};
+            for (const [wrong, right] of Object.entries(newCorrections || {})) {
+                if (typeof wrong !== 'string' || typeof right !== 'string') continue;
                 const w = wrong.toLowerCase().trim();
                 const r = right.trim();
-                // Evitamos duplicados, vacíos o que sean idénticas
-                if (w && r && w !== r.toLowerCase() && !correctionsDict[w] && esReglaDiccionarioSegura(w, r)) {
-                    correctionsDict[w] = r;
-                    correctionsMeta[w] = { auto: true, date: new Date().toLocaleDateString() };
-                    addedCount++;
-                }
+                if (!w || !r || w === r.toLowerCase()) continue;
+                if (correctionsDict[w] || pend[w]) continue;
+                if (window.GTXDictReview && window.GTXDictReview.isRejected(w, r)) continue;
+                if (!esReglaDiccionarioSegura(w, r)) continue;
+                pend[w] = { right: r, date: Date.now(), ctx: window.GTXDictReview ? window.GTXDictReview.context(original, w) : '' };
+                addedCount++;
             }
 
-            if (addedCount > 0) {
-                localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
-                localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
-                if (typeof renderDict === 'function') renderDict();
-                console.log(`Aprendidas ${addedCount} nuevas correcciones.`);
-                updateSyncIndicator('success');
-                setTimeout(() => {
-                    updateSyncIndicator('idle');
-                }, 3000);
-            } else {
-                updateSyncIndicator('idle');
+            if (addedCount > 0 && window.GTXDictReview) {
+                window.GTXDictReview.savePending(pend);
+                console.log(`${addedCount} corrección(es) propuesta(s) para revisar.`);
             }
+            updateSyncIndicator('idle');
         } else {
             updateSyncIndicator('idle');
         }

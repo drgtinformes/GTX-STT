@@ -9,7 +9,8 @@
  * Al pasar la beta a producción este archivo se elimina.
  */
 (function () {
-    const PROTECTED = new Set(['custom_dict', 'custom_dict_meta', 'user_macros', 'user_templates']);
+    const PROTECTED = new Set(['custom_dict', 'custom_dict_meta', 'user_macros', 'user_templates',
+        'custom_dict_pending', 'custom_dict_rejected', 'custom_dict_versions']);
     const PREFIX = 'beta__';
     const proto = Storage.prototype;
     const _get = proto.getItem, _set = proto.setItem, _rem = proto.removeItem;

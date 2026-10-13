@@ -12,6 +12,7 @@
 (function () {
     const MODE_KEY = 'gtx_ws_mode';
     const WIDTH_KEY = 'gtx_ws_app_width';
+    const BOARD_KEY = 'gtx_ws_board';      // tablero activo (uno por orden; 'default' = libre)
     const chan = ('BroadcastChannel' in window) ? new BroadcastChannel(window.GTX_CANVAS_CHANNEL || 'gtx-canvas') : null;
 
     let mode = 'off';
@@ -24,6 +25,7 @@
     const btn = document.getElementById('canvas-btn');
     const safeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
     const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* noop */ } };
+    const currentBoard = () => safeGet(BOARD_KEY) || 'default';
 
     function buildLayout() {
         layout = document.createElement('div');
@@ -68,7 +70,7 @@
             onClose: () => setMode('off'),
             closeTitle: 'Cerrar estación de trabajo',
         });
-        board.load();
+        board.load(currentBoard());
         mode = 'docked';
     }
 
@@ -165,12 +167,44 @@
         return board.addFiles(files);
     }
 
+    /**
+     * Abre (o crea) el tablero de una orden. Si el tablero aún no tiene imágenes,
+     * llama a fetchFiles() para traerlas (p. ej. adjuntos del correo).
+     * @returns {Promise<number>} cantidad de imágenes agregadas
+     */
+    async function openBoard(boardId, title, fetchFiles) {
+        boardId = boardId || 'default';
+        safeSet(BOARD_KEY, boardId);
+        let existing = null;
+        try { existing = await window.GTXCanvasStore.getBoard(boardId); } catch (e) { /* noop */ }
+        const hasItems = !!(existing && existing.items && existing.items.length);
+        let files = [];
+        if (!hasItems && fetchFiles) files = (await fetchFiles()) || [];
+        if (mode === 'popped' && popupAlive && chan) {
+            chan.postMessage({ type: 'open-board', boardId, title, files });
+            return files.length;
+        }
+        if (mode !== 'docked') setMode('docked');
+        await board.load(boardId, title);
+        if (files.length) await board.addFiles(files);
+        return files.length;
+    }
+
     window.GTXWorkstation = {
         addImages,
+        openBoard,
+        get boardId() { return currentBoard(); },
         get mode() { return mode; },
         get board() { return board; },
         setMode,
     };
+
+    // ---- Limpieza: tableros sin uso por más de 14 días ----
+    setTimeout(() => {
+        if (window.GTXCanvasStore) window.GTXCanvasStore.prune(14, [currentBoard(), 'default'])
+            .then(n => { if (n) console.log(`Tablero: ${n} tablero(s) antiguo(s) eliminados`); })
+            .catch(() => {});
+    }, 4000);
 
     // ---- Restaurar el modo al recargar ----
     const saved = safeGet(MODE_KEY);

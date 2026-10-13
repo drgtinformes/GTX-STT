@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tablero — GTX Radiologia</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="canvas-board.css?v=1">
+    <link rel="stylesheet" href="canvas-board.css?v=3">
     <script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.min.js"></script>
     <style>
         html, body { margin: 0; height: 100%; background: #15181d; overflow: hidden; }
@@ -14,7 +14,7 @@
 </head>
 <body>
     <div id="pane"></div>
-    <script src="canvas-board.js?v=1"></script>
+    <script src="canvas-board.js?v=2"></script>
     <script>
         (function () {
             const chan = new BroadcastChannel(window.GTX_CANVAS_CHANNEL);
@@ -25,13 +25,19 @@
                 popoutTitle: 'Volver a la pantalla dividida en la ventana principal',
                 onPopout: () => { docking = true; board.destroy(); chan.postMessage({ type: 'popup-dock' }); window.close(); },
             });
-            board.load();
+            let currentBoard = 'default';
+            try { currentBoard = localStorage.getItem('gtx_ws_board') || 'default'; } catch (e) {}
+            board.load(currentBoard);
             window.board = board;
 
             chan.onmessage = (ev) => {
                 const m = ev.data || {};
                 if (m.type === 'ping') chan.postMessage({ type: 'pong' });
                 else if (m.type === 'add' && m.files) { board.addFiles(m.files); window.focus(); }
+                else if (m.type === 'open-board') {
+                    board.load(m.boardId, m.title).then(() => { if (m.files && m.files.length) board.addFiles(m.files); });
+                    window.focus();
+                }
                 else if (m.type === 'close-popup') { docking = true; board.destroy(); window.close(); }
             };
             // F2/F3 en esta ventana controlan el dictado de la ventana principal
