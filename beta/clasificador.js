@@ -54,36 +54,35 @@ USA EL CONJUNTO: un set completo suele tener pares simétricos derecho/izquierdo
 
 Si no puedes decidir con seguridad, baja la confianza (no adivines con confianza alta).
 
-FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion", con una entrada por imagen (campo "n" = número de la imagen).`;
+FORMATO: responde con el JSON del esquema indicado, una entrada por imagen (campo "n" = número de la imagen).`;
 
-    // Salida estructurada: la API obliga a responder con este esquema (sin texto suelto que interpretar)
-    const TOOL = {
-        name: 'registrar_clasificacion',
-        description: 'Registra la clasificación de cada radiografía del set.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                imagenes: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            n: { type: 'integer', description: 'Número de la imagen (1, 2, …)' },
-                            tipo: { type: 'string', enum: ['periapical', 'bitewing', 'panoramica', 'oclusal', 'otra'] },
-                            arcada: { type: 'string', enum: ['sup', 'inf', 'ambas'] },
-                            region: { type: 'string', enum: ['molares', 'premolares', 'canino', 'incisivos', 'ninguna'], description: '"ninguna" si abarca ambos sectores por igual o es panorámica' },
-                            lado: { type: 'string', enum: ['der', 'izq', 'centro'] },
-                            dientes: { type: 'array', items: { type: 'string' } },
-                            confianza: { type: 'number' },
-                            advertencia: { type: 'string' },
-                            razon: { type: 'string' },
-                        },
-                        required: ['n', 'tipo', 'arcada', 'lado', 'confianza', 'razon'],
+    // Salida estructurada (output_config.format, json_schema): la API garantiza que la respuesta
+    // cumple este esquema. Todos los objetos deben llevar additionalProperties: false.
+    const SCHEMA = {
+        type: 'object',
+        properties: {
+            imagenes: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        n: { type: 'integer' },
+                        tipo: { type: 'string', enum: ['periapical', 'bitewing', 'panoramica', 'oclusal', 'otra'] },
+                        arcada: { type: 'string', enum: ['sup', 'inf', 'ambas'] },
+                        region: { type: 'string', enum: ['molares', 'premolares', 'canino', 'incisivos', 'ninguna'] },
+                        lado: { type: 'string', enum: ['der', 'izq', 'centro'] },
+                        dientes: { type: 'array', items: { type: 'string' } },
+                        confianza: { type: 'number' },
+                        advertencia: { type: 'string' },
+                        razon: { type: 'string' },
                     },
+                    required: ['n', 'tipo', 'arcada', 'region', 'lado', 'dientes', 'confianza', 'advertencia', 'razon'],
+                    additionalProperties: false,
                 },
             },
-            required: ['imagenes'],
         },
+        required: ['imagenes'],
+        additionalProperties: false,
     };
 
     function extraerJSON(t) {
@@ -150,7 +149,7 @@ FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion
             content.push({ type: 'text', text: `Imagen ${k + 1}${lote[k].nombre ? ` (archivo: ${lote[k].nombre})` : ''}:` });
             content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToB64(lote[k].blob) } });
         }
-        content.push({ type: 'text', text: `Clasifica las ${lote.length} imágenes con la herramienta registrar_clasificacion.` });
+        content.push({ type: 'text', text: `Clasifica las ${lote.length} imágenes.` });
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), 120000);
         let resp;
@@ -168,8 +167,7 @@ FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion
                     model: m,
                     max_tokens: 800 + 350 * lote.length,
                     system: PROMPT,
-                    tools: [TOOL],
-                    tool_choice: { type: 'tool', name: TOOL.name },
+                    output_config: { format: { type: 'json_schema', schema: SCHEMA } },
                     messages: [{ role: 'user', content }],
                 }),
             });
@@ -178,7 +176,7 @@ FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion
         } finally { clearTimeout(to); }
         if (!resp.ok) {
             let msg = 'HTTP ' + resp.status;
-            try { const e = await resp.json(); msg = (e.error && e.error.message) || msg; } catch (e) { /* noop */ }
+            try { const e = await resp.json(); ultima = { status: resp.status, error: e }; msg = (e.error && e.error.message) || msg; } catch (e) { /* noop */ }
             if (/x-api-key|authentication|401/i.test(msg)) msg = 'clave de Anthropic inválida o revocada';
             else if (/credit|billing|balance/i.test(msg)) msg = 'sin saldo en la cuenta de Anthropic';
             else if (/overloaded|529|rate|429/i.test(msg)) msg = 'Anthropic está saturado, intenta en un momento';
@@ -187,12 +185,11 @@ FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion
         const data = await resp.json();
         const usd = registrarCosto(data.usage, m);
         ultima = { stop_reason: data.stop_reason, content: data.content, n: lote.length };
-        const tool = (data.content || []).find(b => b.type === 'tool_use' && b.input);
-        let arr = tool && Array.isArray(tool.input.imagenes) ? tool.input.imagenes : null;
-        if (!arr) {
-            // Respaldo: JSON en texto
-            const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-            try { arr = extraerJSON(text).imagenes || null; } catch (e) { arr = null; }
+        if (data.stop_reason === 'refusal') throw new Error('el modelo declinó clasificar estas imágenes');
+        const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+        let arr = null;
+        try { arr = JSON.parse(text).imagenes || null; } catch (e) {
+            try { arr = extraerJSON(text).imagenes || null; } catch (e2) { arr = null; }
         }
         if (!arr || !arr.length) {
             console.warn('Clasificador: respuesta no interpretable', data);
