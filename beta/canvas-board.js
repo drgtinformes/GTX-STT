@@ -180,57 +180,76 @@
     const TPL_STORE_KEY = 'gtx_canvas_templates';
     const TRAY_CELL = 320, TRAY_GAP = 24, TRAY_COLS = 2;
 
-    function rowOf(types, labels, y0, alignBottom) {
+    // Etiquetas clínicas de cada casilla (t): las usa el clasificador con IA para ubicar las imágenes.
+    // Convención de lectura: lado derecho del paciente a la izquierda de la pantalla.
+    const PA = (arcada, region, lado) => ({ tipo: 'periapical', arcada, region, lado });
+    const BW = (lado, region) => ({ tipo: 'bitewing', lado, ...(region ? { region } : {}) });
+    const REG7 = [['molares', 'der'], ['premolares', 'der'], ['canino', 'der'], ['incisivos', 'centro'], ['canino', 'izq'], ['premolares', 'izq'], ['molares', 'izq']];
+    const REG_LABEL = { molares: 'Molares', premolares: 'Premolares', canino: 'Canino', incisivos: 'Incisivos' };
+    const LADO_LABEL = { der: ' der.', izq: ' izq.', centro: '' };
+
+    function rowOf(types, arcada, y0, alignBottom) {
         // types: 'L' (horizontal 320×250) o 'P' (vertical 245×335)
         const D = { L: { w: 320, h: 250 }, P: { w: 245, h: 335 } };
         const maxH = Math.max(...types.map(t => D[t].h));
         let x = 0;
         return types.map((t, i) => {
             const d = D[t];
-            const s = { x, y: y0 + (alignBottom ? maxH - d.h : 0), w: d.w, h: d.h, label: labels[i] };
+            const [region, lado] = REG7[i];
+            const s = { x, y: y0 + (alignBottom ? maxH - d.h : 0), w: d.w, h: d.h, label: REG_LABEL[region] + LADO_LABEL[lado], t: PA(arcada, region, lado) };
             x += d.w + 12;
             return s;
         });
     }
 
     const BUILTIN_TEMPLATES = (() => {
-        const L = (x, y, label) => ({ x, y, w: 320, h: 250, label });
-        const P = (x, y, label) => ({ x, y, w: 245, h: 335, label });
+        const lbl = (t) => REG_LABEL[t.region] + LADO_LABEL[t.lado];
+        const L = (x, y, t) => ({ x, y, w: 320, h: 250, label: lbl(t), t });
+        const P = (x, y, t) => ({ x, y, w: 245, h: 335, label: lbl(t), t });
         const withIds = (pfx, slots) => slots.map((s, i) => ({ id: `${pfx}-${i + 1}`, ...s }));
-        const reg7 = ['Molares der.', 'Premolares der.', 'Canino der.', 'Incisivos', 'Canino izq.', 'Premolares izq.', 'Molares izq.'];
         return [
             {
+                // Columnas dobles de los extremos: arriba molares, abajo premolares (ambos lados, ambas arcadas)
                 id: 'fmx18', name: 'Set total (18)',
                 slots: withIds('fmx18', [
-                    L(0, 0, 'Sup 1'), L(0, 262, 'Sup 2'),
-                    P(332, 0, 'Sup 3'), P(589, 0, 'Sup 4'), P(846, 0, 'Sup 5'), P(1103, 0, 'Sup 6'),
-                    L(1360, 0, 'Sup 7'), L(1360, 262, 'Sup 8'),
-                    { x: 470, y: 380, w: 320, h: 260, label: 'BW der.' },
-                    { x: 890, y: 380, w: 320, h: 260, label: 'BW izq.' },
-                    L(0, 560, 'Inf 1'), L(0, 822, 'Inf 2'),
-                    P(332, 737, 'Inf 3'), P(589, 737, 'Inf 4'), P(846, 737, 'Inf 5'), P(1103, 737, 'Inf 6'),
-                    L(1360, 560, 'Inf 7'), L(1360, 822, 'Inf 8'),
+                    L(0, 0, PA('sup', 'molares', 'der')), L(0, 262, PA('sup', 'premolares', 'der')),
+                    P(332, 0, PA('sup', 'canino', 'der')), P(589, 0, PA('sup', 'incisivos', 'der')),
+                    P(846, 0, PA('sup', 'incisivos', 'izq')), P(1103, 0, PA('sup', 'canino', 'izq')),
+                    L(1360, 0, PA('sup', 'molares', 'izq')), L(1360, 262, PA('sup', 'premolares', 'izq')),
+                    { x: 470, y: 380, w: 320, h: 260, label: 'BW der.', t: BW('der') },
+                    { x: 890, y: 380, w: 320, h: 260, label: 'BW izq.', t: BW('izq') },
+                    L(0, 560, PA('inf', 'molares', 'der')), L(0, 822, PA('inf', 'premolares', 'der')),
+                    P(332, 737, PA('inf', 'canino', 'der')), P(589, 737, PA('inf', 'incisivos', 'der')),
+                    P(846, 737, PA('inf', 'incisivos', 'izq')), P(1103, 737, PA('inf', 'canino', 'izq')),
+                    L(1360, 560, PA('inf', 'molares', 'izq')), L(1360, 822, PA('inf', 'premolares', 'izq')),
                 ]),
             },
             {
                 id: 'fmx14', name: 'Set total (14)',
                 slots: withIds('fmx14', [
-                    ...rowOf(['L', 'L', 'P', 'P', 'P', 'L', 'L'], reg7, 0, true),
-                    ...rowOf(['L', 'L', 'P', 'P', 'P', 'L', 'L'], reg7, 375, false),
+                    ...rowOf(['L', 'L', 'P', 'P', 'P', 'L', 'L'], 'sup', 0, true),
+                    ...rowOf(['L', 'L', 'P', 'P', 'P', 'L', 'L'], 'inf', 375, false),
                 ]),
             },
             {
                 id: 'pano-bw2', name: 'Panorámica + 2 BW',
                 slots: withIds('pano-bw2', [
-                    { x: 0, y: 0, w: 1600, h: 800, label: 'Panorámica' },
-                    { x: 380, y: 840, w: 400, h: 320, label: 'BW der.' },
-                    { x: 820, y: 840, w: 400, h: 320, label: 'BW izq.' },
+                    { x: 0, y: 0, w: 1600, h: 800, label: 'Panorámica', t: { tipo: 'panoramica' } },
+                    { x: 380, y: 840, w: 400, h: 320, label: 'BW der.', t: BW('der') },
+                    { x: 820, y: 840, w: 400, h: 320, label: 'BW izq.', t: BW('izq') },
+                ]),
+            },
+            {
+                id: 'bw2', name: 'Bite-wings (2)',
+                slots: withIds('bw2', [
+                    { x: 0, y: 0, w: 480, h: 380, label: 'BW der.', t: BW('der') },
+                    { x: 510, y: 0, w: 480, h: 380, label: 'BW izq.', t: BW('izq') },
                 ]),
             },
             {
                 id: 'bw4', name: 'Bite-wings (4)',
-                slots: withIds('bw4', ['Molares der.', 'Premolares der.', 'Premolares izq.', 'Molares izq.']
-                    .map((label, i) => ({ x: i * 412, y: 0, w: 400, h: 320, label }))),
+                slots: withIds('bw4', [['molares', 'der'], ['premolares', 'der'], ['premolares', 'izq'], ['molares', 'izq']]
+                    .map(([region, lado], i) => ({ x: i * 412, y: 0, w: 400, h: 320, label: 'BW ' + REG_LABEL[region].toLowerCase() + LADO_LABEL[lado], t: BW(lado, region) }))),
             },
             {
                 id: 'cmp2', name: 'Comparación (2)',
@@ -275,6 +294,8 @@
         ['Plantilla: arrastrar a una casilla', 'Ubica la imagen en esa casilla'],
         ['Plantilla: arrastrar sobre otra imagen', 'Intercambia las dos imágenes'],
         ['A con plantilla', 'Re-encaja y llena las casillas vacías'],
+        ['Clasificar (IA)', 'Detecta tipo, región y lado de cada imagen y las ubica en la plantilla'],
+        ['E', 'Mostrar / ocultar las etiquetas de la clasificación'],
     ];
 
     /** Filtros SVG de nitidez (convolución "unsharp") reutilizables por CSS: url(#cb-sharp-N) */
@@ -340,6 +361,7 @@
                     <button class="cb-btn" data-act="add" title="Agregar imágenes desde archivos"><i data-lucide="image-plus"></i><span>Agregar</span></button>
                     <button class="cb-btn" data-act="arrange" title="Ordenar automático (A)"><i data-lucide="layout-grid"></i><span>Ordenar</span></button>
                     <button class="cb-btn" data-act="tpl" title="Plantillas de disposición (casillas para ordenar las imágenes)"><i data-lucide="layout-template"></i><span class="cb-tpl-label">Plantilla</span></button>
+                    <button class="cb-btn" data-act="ia" title="Clasificar las imágenes con IA (tipo, región y lado) y ubicarlas en la plantilla"><i data-lucide="scan-eye"></i><span class="cb-ia-label">Clasificar</span></button>
                     <button class="cb-btn" data-act="fit" title="Ajustar todo a pantalla (F)"><i data-lucide="maximize"></i><span>Ajustar</span></button>
                     <span class="cb-zoom" title="Zoom del tablero">100%</span>
                     <span class="cb-title" title=""></span>
@@ -382,14 +404,18 @@
                     </div>
                 </div>
                 <div class="cb-tpl-menu"></div>
+                <div class="cb-tpl-menu cb-ia-menu"></div>
                 <input type="file" accept="image/*" multiple hidden class="cb-file">
             `;
             this.container.appendChild(root);
             this.root = root;
             this.vp = root.querySelector('.cb-viewport');
             this.world = root.querySelector('.cb-world');
-            this.tplMenu = root.querySelector('.cb-tpl-menu');
+            this.tplMenu = root.querySelector('.cb-tpl-menu:not(.cb-ia-menu)');
             this.tplBtn = root.querySelector('[data-act="tpl"]');
+            this.iaMenu = root.querySelector('.cb-ia-menu');
+            this.iaBtn = root.querySelector('[data-act="ia"]');
+            try { if (localStorage.getItem('gtx_clasif_badges') === '0') root.classList.add('cb-hide-badges'); } catch (e) { /* noop */ }
             this.slotLayer = document.createElement('div');
             this.slotLayer.className = 'cb-slots';
             this.world.appendChild(this.slotLayer);
@@ -436,13 +462,13 @@
                 paste: (e) => this._onPaste(e),
                 resize: () => this._renderAll(),
                 docdown: (e) => {
-                    if (!this.tplMenu.classList.contains('show')) return;
-                    if (this.tplMenu.contains(e.target) || this.tplBtn.contains(e.target)) return;
-                    this.tplMenu.classList.remove('show');
+                    if (this.tplMenu.classList.contains('show') && !this.tplMenu.contains(e.target) && !this.tplBtn.contains(e.target)) this.tplMenu.classList.remove('show');
+                    if (this.iaMenu.classList.contains('show') && !this.iaMenu.contains(e.target) && !this.iaBtn.contains(e.target)) this.iaMenu.classList.remove('show');
                 },
             };
             document.addEventListener('pointerdown', this._h.docdown, true);
             this.tplMenu.addEventListener('click', (e) => this._onTplMenu(e));
+            this.iaMenu.addEventListener('click', (e) => this._onIaMenu(e));
             vp.addEventListener('pointerdown', this._h.pointerdown);
             vp.addEventListener('pointermove', this._h.pointermove);
             vp.addEventListener('pointerup', this._h.pointerup);
@@ -469,6 +495,7 @@
                 if (act === 'add') this.fileInput.click();
                 else if (act === 'arrange') this.arrange();
                 else if (act === 'tpl') this._toggleTplMenu();
+                else if (act === 'ia') this._toggleIaMenu();
                 else if (act === 'fit') this.fit();
                 else if (act === 'clear') this.clear();
                 else if (act === 'help') this.helpEl.classList.toggle('show');
@@ -852,6 +879,226 @@
             this._placeItembar();
         }
 
+        // ----- clasificación con IA -----
+        /** Etiquetas clínicas de una casilla (las plantillas guardadas antes de esta versión no las traen). */
+        _slotTags(sl) {
+            if (!sl) return null;
+            if (sl.t) return sl.t;
+            const b = this.template && BUILTIN_TEMPLATES.find(t => t.id === this.template.id);
+            const bs = b && b.slots.find(s => s.id === sl.id);
+            return (bs && bs.t) || null;
+        }
+
+        /** JPEG de la imagen tal como se ve (rotación y espejo aplicados), lado mayor ≤ max px. */
+        async _jpegAsShown(it, max = 1024) {
+            const img = await new Promise((resolve, reject) => {
+                const im = new Image();
+                im.onload = () => resolve(im);
+                im.onerror = () => reject(new Error('imagen ilegible'));
+                im.src = this.urls.get(it.key);
+            });
+            const rot = (it.rot % 180) !== 0;
+            const W0 = rot ? it.h : it.w, H0 = rot ? it.w : it.h;
+            const k = Math.min(1, max / Math.max(W0, H0));
+            const c = document.createElement('canvas');
+            c.width = Math.max(1, Math.round(W0 * k));
+            c.height = Math.max(1, Math.round(H0 * k));
+            const g = c.getContext('2d');
+            g.fillStyle = '#000';
+            g.fillRect(0, 0, c.width, c.height);
+            g.translate(c.width / 2, c.height / 2);
+            g.rotate((it.rot || 0) * Math.PI / 180);
+            g.scale(it.flip ? -1 : 1, 1);
+            g.drawImage(img, -it.w * k / 2, -it.h * k / 2, it.w * k, it.h * k);
+            return new Promise(resolve => c.toBlob(resolve, 'image/jpeg', 0.85));
+        }
+
+        _badgeText(c) {
+            const lado = { der: ' der.', izq: ' izq.', centro: '' }[c.lado] || '';
+            const pct = ` · ${Math.round(c.conf * 100)}%`;
+            if (c.tipo === 'bitewing') return `BW${c.region ? ' ' + c.region : ''}${lado}${pct}`;
+            if (c.tipo === 'panoramica') return `Panorámica${pct}`;
+            if (c.tipo === 'periapical') return `${c.arcada === 'sup' ? 'Sup' : c.arcada === 'inf' ? 'Inf' : 'PA'} ${c.region || ''}${lado}${pct}`;
+            return (c.tipo === 'oclusal' ? 'Oclusal' : 'No dental / otra') + pct;
+        }
+
+        _renderBadge(it, b) {
+            if (!b) return;
+            const c = it.cls;
+            if (!c) { b.style.display = 'none'; return; }
+            b.style.display = '';
+            const low = c.conf < 0.7 || !!c.adv;
+            b.className = 'cb-badge' + (low ? ' low' : '');
+            b.textContent = (low ? '⚠ ' : '') + this._badgeText(c);
+            b.title = [c.razon, c.dientes && c.dientes.length ? 'Dientes: ' + c.dientes.join(', ') : '', c.adv ? '⚠ ' + c.adv : '', c.modelo ? 'Modelo: ' + c.modelo : '']
+                .filter(Boolean).join('\n');
+        }
+
+        toggleBadges() {
+            const hide = !this.root.classList.contains('cb-hide-badges');
+            this.root.classList.toggle('cb-hide-badges', hide);
+            try { localStorage.setItem('gtx_clasif_badges', hide ? '0' : '1'); } catch (e) { /* noop */ }
+        }
+
+        /** Plantilla sugerida según lo que se detectó. */
+        _suggestTemplate() {
+            const n = { periapical: 0, bitewing: 0, panoramica: 0 };
+            for (const it of this.items) if (it.cls && n[it.cls.tipo] !== undefined) n[it.cls.tipo]++;
+            const { periapical: pa, bitewing: bw, panoramica: pano } = n;
+            let id = null;
+            if (pano && bw && !pa) id = 'pano-bw2';
+            else if (bw >= 3 && !pa && !pano) id = 'bw4';
+            else if (bw && !pa && !pano) id = 'bw2';
+            else if (pa >= 12 && bw) id = 'fmx18';
+            else if (pa >= 10) id = 'fmx14';
+            return id ? TemplateStore.get(id) : null;
+        }
+
+        /** Ubica las imágenes clasificadas en las casillas que les corresponden; las dudosas van a la bandeja. */
+        _placeByClass() {
+            const C = window.GTXClasificador;
+            const slots = this.template.slots.map(sl => ({ sl, t: this._slotTags(sl) })).filter(x => x.t);
+            const its = this.items.filter(it => it.cls);
+            if (!slots.length || !its.length) return { placed: 0, left: its.length };
+            its.forEach(it => { delete it.slot; });
+            const used = new Set(this.items.filter(o => o.slot).map(o => o.slot));
+            const pairs = [];
+            for (const it of its) for (const s of slots) {
+                const p = C.puntaje(it.cls, s.t);
+                if (p > -Infinity) pairs.push({ it, s, p });
+            }
+            pairs.sort((a, b) => b.p - a.p);
+            const done = new Set();
+            for (const x of pairs) {
+                if (done.has(x.it) || used.has(x.s.sl.id)) continue;
+                this._fitToSlot(x.it, x.s.sl);
+                done.add(x.it);
+                used.add(x.s.sl.id);
+            }
+            const left = its.filter(it => !done.has(it));
+            this._trayPlace(left);
+            return { placed: done.size, left: left.length };
+        }
+
+        /** Clasifica todas las imágenes del tablero y las ubica en la plantilla (activa o sugerida). */
+        async classify() {
+            const C = window.GTXClasificador;
+            if (!C) { this._notice('El clasificador no está cargado.', false, 5000); return; }
+            if (this._classifying || !this.items.length) return;
+            this._classifying = true;
+            this.iaBtn.classList.add('busy');
+            const label = this.iaBtn.querySelector('.cb-ia-label');
+            const list = this.items.slice();
+            try {
+                label.textContent = 'Preparando…';
+                const imgs = [];
+                for (const it of list) {
+                    try { imgs.push({ id: it.id, blob: await this._jpegAsShown(it), nombre: it.name || '' }); } catch (e) { /* se omite */ }
+                }
+                this._notice(`Clasificando ${imgs.length} imagen(es) con ${(C.MODELOS[C.modelo()] || {}).nombre || C.modelo()}…`, false, 120000);
+                label.textContent = 'Clasificando…';
+                const r = await C.clasificar(imgs, (h, t) => { label.textContent = `Clasificando ${h}/${t}…`; });
+                for (const it of list) { const c = r.res.get(it.id); if (c) it.cls = c; }
+                let tplMsg = '';
+                if (!this.template || !this.template.slots.some(sl => this._slotTags(sl))) {
+                    const sug = this._suggestTemplate();
+                    if (sug) {
+                        this.template = JSON.parse(JSON.stringify({ id: sug.id, name: sug.name, slots: sug.slots }));
+                        this.items.forEach(it => { delete it.slot; });
+                        this._renderSlots();
+                        tplMsg = ` Plantilla: ${sug.name}.`;
+                    }
+                }
+                let pl = null;
+                if (this.template) pl = this._placeByClass();
+                this.focusPrev = null;
+                this._renderAll();
+                this.fit();
+                this._save();
+                const clas = list.filter(it => it.cls);
+                const dud = clas.filter(it => it.cls.conf < 0.7 || it.cls.adv).length;
+                this._notice(`Clasificadas ${clas.length}/${list.length} (US$ ${r.usd.toFixed(3)}).${tplMsg}` +
+                    (dud ? ` ${dud} dudosa(s) marcadas con ⚠.` : '') +
+                    (pl && pl.left ? ` ${pl.left} sin casilla quedaron a la derecha.` : '') +
+                    ' Revisa, corrige arrastrando y usa "Confirmar ubicación" para medir la precisión.', false, 15000);
+            } catch (e) {
+                console.error('Clasificador:', e);
+                this._notice(`No se pudo clasificar: ${e.message || e}`, false, 10000);
+            } finally {
+                this._classifying = false;
+                this.iaBtn.classList.remove('busy');
+                label.textContent = 'Clasificar';
+            }
+        }
+
+        /** El radiólogo confirma que la disposición actual es correcta: se compara con lo que predijo la IA. */
+        confirmPlacement() {
+            const C = window.GTXClasificador;
+            if (!C) return;
+            const pares = [], usados = [];
+            for (const it of this.items) {
+                if (!it.cls || it.cls.confirmado || !it.slot) continue;
+                const t = this._slotTags(this._slotById(it.slot));
+                if (!t) continue;
+                pares.push({ c: it.cls, t });
+                usados.push(it);
+            }
+            const sinCasilla = this.items.filter(it => it.cls && !it.cls.confirmado && !it.slot).length;
+            if (!pares.length) {
+                this._notice(sinCasilla ? 'Ubica las imágenes en sus casillas antes de confirmar.' : 'No hay clasificaciones nuevas que confirmar en este tablero.', false, 5000);
+                return;
+            }
+            const r = C.registrarConfirmacion(pares);
+            usados.forEach(it => { it.cls.confirmado = true; });
+            this._save();
+            const st = C.estadisticas();
+            this._notice(`Este set: ${r.ok}/${r.n} correctas (lado correcto: ${r.okLado}/${r.n}).` +
+                (sinCasilla ? ` ${sinCasilla} sin casilla no se contaron.` : '') +
+                ` Acumulado: ${st.pct}% en ${st.n} imágenes` + (st.bw.n ? ` · bite-wings: lado ${st.bw.pct}% (${st.bw.n})` : '') + '.', false, 12000);
+        }
+
+        _toggleIaMenu() {
+            const m = this.iaMenu;
+            if (m.classList.contains('show')) { m.classList.remove('show'); return; }
+            const C = window.GTXClasificador;
+            const st = C ? C.estadisticas() : null;
+            const cur = C ? C.modelo() : '';
+            const hidden = this.root.classList.contains('cb-hide-badges');
+            const pend = this.items.some(it => it.cls && !it.cls.confirmado && it.slot);
+            m.innerHTML =
+                `<button type="button" class="cb-tpl-item" data-ia="run"${this.items.length && C ? '' : ' disabled'}><span class="cb-tpl-check">✦</span><span class="cb-tpl-name">Clasificar y ubicar (${this.items.length} imágenes)</span></button>` +
+                `<button type="button" class="cb-tpl-item" data-ia="confirm"${pend ? '' : ' disabled'}><span class="cb-tpl-check">✓</span><span class="cb-tpl-name">Confirmar ubicación actual (medir precisión)</span></button>` +
+                `<button type="button" class="cb-tpl-item" data-ia="badges"><span class="cb-tpl-check">${hidden ? '' : '✓'}</span><span class="cb-tpl-name">Mostrar etiquetas</span><span class="cb-tpl-n">E</span></button>` +
+                `<div class="cb-tpl-sep"></div><div class="cb-tpl-head">Modelo</div>` +
+                (C ? Object.entries(C.MODELOS).map(([id, mm]) => `<button type="button" class="cb-tpl-item${id === cur ? ' on' : ''}" data-ia-model="${id}"><span class="cb-tpl-check">${id === cur ? '●' : ''}</span><span class="cb-tpl-name">${esc(mm.nombre)}</span></button>`).join('') : '') +
+                `<div class="cb-tpl-sep"></div>` +
+                `<div class="cb-ia-stats">${st && st.n
+                    ? `Precisión confirmada: <b>${st.pct}%</b> (${st.ok}/${st.n}) · lado: <b>${st.pctLado}%</b>` +
+                      (st.bw.n ? `<br>Bite-wings, lado: <b>${st.bw.pct}%</b> (${st.bw.ok}/${st.bw.n})` : '') +
+                      (st.confAlta.n ? `<br>Con confianza ≥70%: <b>${st.confAlta.pct}%</b> (${st.confAlta.n})` : '')
+                    : 'Aún no hay sets confirmados.'}` +
+                (st && st.costo ? `<br>Costo ${esc(st.costo.mes)}: US$ ${st.costo.usd.toFixed(2)} (${st.costo.n} consultas)` : '') + `</div>` +
+                (st && st.n ? `<button type="button" class="cb-tpl-item" data-ia="reset"><span class="cb-tpl-check"></span><span class="cb-tpl-name">Borrar estadísticas</span></button>` : '');
+            const rr = this.root.getBoundingClientRect(), br = this.iaBtn.getBoundingClientRect();
+            m.classList.add('show');
+            m.style.left = Math.max(6, Math.min(br.left - rr.left, rr.width - m.offsetWidth - 6)) + 'px';
+            m.style.top = (br.bottom - rr.top + 4) + 'px';
+        }
+
+        _onIaMenu(e) {
+            const b = e.target.closest('button');
+            if (!b || b.disabled) return;
+            const C = window.GTXClasificador;
+            if (b.dataset.iaModel) { if (C) C.setModelo(b.dataset.iaModel); this.iaMenu.classList.remove('show'); this._toggleIaMenu(); return; }
+            this.iaMenu.classList.remove('show');
+            const a = b.dataset.ia;
+            if (a === 'run') this.classify();
+            else if (a === 'confirm') this.confirmPlacement();
+            else if (a === 'badges') this.toggleBadges();
+            else if (a === 'reset' && C && window.confirm('¿Borrar las estadísticas de precisión del clasificador?')) C.borrarEstadisticas();
+            this.vp.focus({ preventScroll: true });
+        }
+
         // ----- menú de plantillas -----
         _toggleTplMenu() {
             const m = this.tplMenu;
@@ -966,7 +1213,7 @@
             el = document.createElement('div');
             el.className = 'cb-item';
             el.dataset.id = it.id;
-            el.innerHTML = `<img draggable="false" alt="">`;
+            el.innerHTML = `<img draggable="false" alt=""><div class="cb-badge"></div>`;
             el.querySelector('img').src = this.urls.get(it.key) || '';
             this.world.appendChild(el);
             this.els.set(it.id, el);
@@ -993,6 +1240,7 @@
             if ((it.br ?? 1) !== 1) f.push(`brightness(${it.br})`);
             if ((it.ct ?? 1) !== 1) f.push(`contrast(${it.ct})`);
             img.style.filter = f.join(' ');
+            this._renderBadge(it, el.lastElementChild);
         }
 
         _placeSelbox() {
@@ -1487,6 +1735,7 @@
             let handled = true;
             if (k === 'f') this.fit();
             else if (k === 'a') this.arrange();
+            else if (k === 'e') this.toggleBadges();
             else if (k === 'escape') { if (!this.unfocus()) this.setSelection([]); this.helpEl.classList.remove('show'); }
             else if (has && k === 'r') this._itemAction(e.shiftKey ? 'rotl' : 'rotr');
             else if (has && k === 'h') this._itemAction('flip');
