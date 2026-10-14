@@ -452,3 +452,31 @@ body.ws-docked footer { display: none; }
 }
 .cb-tpl-del:hover { background: rgba(239, 68, 68, 0.25); color: #fecaca; }
 .cb-tpl-sep { height: 1px; background: var(--cb-line); margin: 5px 2px; }
+
+/* ===== Clasificador con IA ===== */
+.cb-badge {
+    position: absolute;
+    left: calc(6px / var(--z, 1));
+    top: calc(6px / var(--z, 1));
+    max-width: calc(100% - 12px / var(--z, 1));
+    padding: calc(2px / var(--z, 1)) calc(7px / var(--z, 1));
+    border-radius: calc(6px / var(--z, 1));
+    background: rgba(15, 23, 42, 0.82);
+    border: calc(1px / var(--z, 1)) solid rgba(96, 165, 250, 0.55);
+    color: #dbeafe;
+    font-size: calc(11.5px / var(--z, 1));
+    font-weight: 600;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 1;
+    cursor: help;
+}
+.cb-badge.low { border-color: rgba(245, 158, 11, 0.8); color: #fde68a; background: rgba(40, 26, 4, 0.85); }
+.cb-hide-badges .cb-badge { display: none !important; }
+.cb-btn.busy { opacity: 0.75; pointer-events: none; }
+.cb-btn.busy svg { animation: cb-spin 1.2s linear infinite; }
+@keyframes cb-spin { to { transform: rotate(360deg); } }
+.cb-ia-stats { padding: 6px 8px 4px; font-size: 0.78rem; color: var(--cb-muted); line-height: 1.5; }
+.cb-ia-stats b { color: var(--cb-text); }
