@@ -3809,6 +3809,13 @@ if (generateWordBtn) {
         const docData = await prepareDocument();
         if (docData) {
             window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            // Paciente de un lote: el informe también queda guardado en el lote para el envío conjunto
+            if (window.GTXLotes && window.GTXLotes.activo) {
+                const ok = await window.GTXLotes.guardarInforme(docData);
+                if (!ok) return;
+                limpiarTrasExportar('Word guardado y agregado al lote');
+                return;
+            }
             limpiarTrasExportar('Word guardado');
             return;
         }
@@ -4327,6 +4334,14 @@ const sendGmailBtn = document.getElementById('send-gmail-btn');
 if (sendGmailBtn) {
     sendGmailBtn.addEventListener('click', async () => {
         await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de enviar Gmail
+        // Paciente de un lote: no se responde el correo; el informe se guarda en el lote
+        // y al final se envían todos juntos en un correo nuevo (desde la lista del lote).
+        if (window.GTXLotes && window.GTXLotes.activo) {
+            const docData = await prepareDocument();
+            if (!docData) return;
+            if (await window.GTXLotes.guardarInforme(docData)) limpiarTrasExportar('Informe agregado al lote');
+            return;
+        }
         const originalText = sendGmailBtn.innerHTML;
         try {
             // 1. Preparar el documento (obtenemos el blob)

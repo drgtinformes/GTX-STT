@@ -194,11 +194,55 @@
                         ...att.others.map(x => '· ' + x.part.filename),
                     ].join('\n'),
                     answered,
+                    // ¿Parte de un lote? (varios pacientes + Excel, o "PARTE n DE m")
+                    _lote: window.GTXLotes ? window.GTXLotes.esLote(subject, att.others.map(x => x.part.filename)) : null,
                 });
             }
         }
-        out.sort((a, b) => b.date - a.date);
-        return out;
+        const merged = agruparLotes(out);
+        merged.sort((a, b) => b.date - a.date);
+        return merged;
+    }
+
+    /** Une en una sola fila las partes de un mismo lote (mismo remitente y asunto sin "_PARTE n DE m"). */
+    function agruparLotes(list) {
+        const L = window.GTXLotes;
+        if (!L) return list;
+        const lotes = new Map();
+        const res = [];
+        for (const o of list) {
+            if (!o._lote) { res.push(o); continue; }
+            const key = L.clave(o.fromEmail, o._lote.base);
+            let b = lotes.get(key);
+            if (!b) {
+                b = {
+                    batch: true, loteKey: key, threadId: 'lote:' + key, threadIds: [], partesSet: new Set(), total: 1,
+                    subject: o._lote.base, from: o.from, fromEmail: o.fromEmail, fromName: o.fromName,
+                    date: o.date, snippet: '', patient: '', nImages: 0, nUnsupported: 0, attDetail: '', hasSheet: false, answered: false,
+                };
+                lotes.set(key, b);
+                res.push(b);
+            }
+            b.threadIds.push(o.threadId);
+            if (o._lote.parte) b.partesSet.add(o._lote.parte);
+            b.total = Math.max(b.total, o._lote.total || 1);
+            b.date = Math.max(b.date, o.date);
+            b.nImages += o.nImages;
+            b.nUnsupported += o.nUnsupported;
+            b.hasSheet = b.hasSheet || o._lote.hasSheet;
+        }
+        for (const b of lotes.values()) {
+            b.partes = [...b.partesSet].sort((x, y) => x - y);
+            delete b.partesSet;
+            b.faltan = [];
+            if (b.total > 1) for (let i = 1; i <= b.total; i++) if (!b.partes.includes(i)) b.faltan.push(i);
+            b.answered = L.enviado(b.loteKey);
+            b.snippet = (b.total > 1 ? `Partes recibidas: ${b.partes.length} de ${b.total}` : '1 correo')
+                + (b.faltan.length ? ` · FALTA la parte ${b.faltan.join(', ')}` : '')
+                + (b.hasSheet ? ' · con Excel' : ' · sin Excel');
+            b.attDetail = `${b.nImages} imágenes en ${b.threadIds.length} correo(s)`;
+        }
+        return res;
     }
 
     async function downloadImages(threadId) {
@@ -287,6 +331,12 @@
     }
 
     async function openOrder(o) {
+        if (o.batch) {
+            closeModal();
+            if (window.GTXLotes) window.GTXLotes.abrir(o);
+            return;
+        }
+        if (window.GTXLotes && window.GTXLotes.activo) window.GTXLotes.salir();
         setActive(o);
         const usedTpl = applySenderTemplate(o.fromEmail);
         closeModal();
@@ -486,7 +536,23 @@
             listEl.innerHTML = `<div class="orders-empty">${orders.length ? 'No hay órdenes pendientes de los remitentes seleccionados 🎉' : 'Sin correos que coincidan con el filtro.'}</div>`;
             return;
         }
-        listEl.innerHTML = list.map(o => `
+        listEl.innerHTML = list.map(o => o.batch ? `
+            <div class="order-row lote ${o.answered ? 'answered' : ''}" style="border-color:rgba(168,85,247,.45)">
+                <div class="order-main">
+                    <div class="order-top">
+                        <span class="order-patient">📦 Lote · ${esc(o.subject)}</span>
+                        <span class="order-date">${esc(relTime(o.date))}</span>
+                        <button class="order-hide" data-hide="${esc(o.fromEmail)}" title="No mostrar más correos de ${esc(o.fromName)} (${esc(o.fromEmail)})"><i data-lucide="eye-off"></i></button>
+                    </div>
+                    <div class="order-from">${esc(o.fromName)} · varios pacientes</div>
+                    <div class="order-snippet" ${o.faltan && o.faltan.length ? 'style="color:#fbbf24"' : ''}>${esc(o.snippet)}</div>
+                </div>
+                <div class="order-side">
+                    <span class="order-imgs" title="${esc(o.attDetail)}">${o.nImages} img</span>
+                    ${o.answered ? '<span class="order-done">Enviado</span>' : ''}
+                    <button class="btn primary-btn" data-open="${esc(o.threadId)}">Abrir lote</button>
+                </div>
+            </div>` : `
             <div class="order-row ${o.answered ? 'answered' : ''} ${active && active.threadId === o.threadId ? 'is-active' : ''}">
                 <div class="order-main">
                     <div class="order-top">
@@ -593,6 +659,7 @@
         get active() { return active; },
         getActiveThread,
         onSent,
+        clearActive: () => setActive(null),
         refresh,
         openOrder,
         _guessPatient: guessPatient,
