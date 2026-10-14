@@ -23,6 +23,7 @@
     const LOG_KEY = 'gtx_clasif_log';       // confirmaciones del radiólogo: [{ts, modelo, pred, real, ok}]
     const COST_KEY = 'gtx_clasif_costo';    // { mes, usd, n }
     const LOTE = 20;                        // imágenes por consulta
+    let ultima = null;                      // última respuesta cruda (diagnóstico: GTXClasificador.ultimaRespuesta)
 
     const read = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? d; } catch (e) { return d; } };
     const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* noop */ } };
@@ -34,7 +35,7 @@
 CAMPOS POR IMAGEN:
 - "tipo": "periapical" | "bitewing" | "panoramica" | "oclusal" | "otra" (fotografía, documento, cefalometría, etc.)
 - "arcada": "sup" | "inf" | "ambas" (bite-wing y panorámica = "ambas")
-- "region": "molares" | "premolares" | "canino" | "incisivos" | null. En bite-wing: "molares" si está centrada en molares, "premolares" si está centrada en premolares, null si abarca ambos por igual o es panorámica.
+- "region": "molares" | "premolares" | "canino" | "incisivos" | "ninguna". En bite-wing: "molares" si está centrada en molares, "premolares" si está centrada en premolares, "ninguna" si abarca ambos por igual o es panorámica.
 - "lado": "der" | "izq" | "centro" — lado DEL PACIENTE. "centro" solo para imágenes centradas en la línea media (incisivos).
 - "dientes": dientes visibles más probables en notación FDI con punto ("1.6", "4.7"; temporales 5.x–8.x).
 - "confianza": 0 a 1 sobre el LADO y la REGIÓN.
@@ -53,8 +54,37 @@ USA EL CONJUNTO: un set completo suele tener pares simétricos derecho/izquierdo
 
 Si no puedes decidir con seguridad, baja la confianza (no adivines con confianza alta).
 
-FORMATO: responde SOLO con JSON válido, sin texto adicional:
-{"imagenes":[{"n":1,"tipo":"periapical","arcada":"sup","region":"molares","lado":"der","dientes":["1.6","1.7"],"confianza":0.9,"advertencia":"","razon":"…"}]}`;
+FORMATO: entrega el resultado llamando a la herramienta "registrar_clasificacion", con una entrada por imagen (campo "n" = número de la imagen).`;
+
+    // Salida estructurada: la API obliga a responder con este esquema (sin texto suelto que interpretar)
+    const TOOL = {
+        name: 'registrar_clasificacion',
+        description: 'Registra la clasificación de cada radiografía del set.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                imagenes: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            n: { type: 'integer', description: 'Número de la imagen (1, 2, …)' },
+                            tipo: { type: 'string', enum: ['periapical', 'bitewing', 'panoramica', 'oclusal', 'otra'] },
+                            arcada: { type: 'string', enum: ['sup', 'inf', 'ambas'] },
+                            region: { type: 'string', enum: ['molares', 'premolares', 'canino', 'incisivos', 'ninguna'], description: '"ninguna" si abarca ambos sectores por igual o es panorámica' },
+                            lado: { type: 'string', enum: ['der', 'izq', 'centro'] },
+                            dientes: { type: 'array', items: { type: 'string' } },
+                            confianza: { type: 'number' },
+                            advertencia: { type: 'string' },
+                            razon: { type: 'string' },
+                        },
+                        required: ['n', 'tipo', 'arcada', 'lado', 'confianza', 'razon'],
+                    },
+                },
+            },
+            required: ['imagenes'],
+        },
+    };
 
     function extraerJSON(t) {
         const s = String(t || '');
@@ -120,7 +150,7 @@ FORMATO: responde SOLO con JSON válido, sin texto adicional:
             content.push({ type: 'text', text: `Imagen ${k + 1}${lote[k].nombre ? ` (archivo: ${lote[k].nombre})` : ''}:` });
             content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToB64(lote[k].blob) } });
         }
-        content.push({ type: 'text', text: `Clasifica las ${lote.length} imágenes. Responde solo el JSON.` });
+        content.push({ type: 'text', text: `Clasifica las ${lote.length} imágenes con la herramienta registrar_clasificacion.` });
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), 120000);
         let resp;
@@ -136,8 +166,10 @@ FORMATO: responde SOLO con JSON válido, sin texto adicional:
                 },
                 body: JSON.stringify({
                     model: m,
-                    max_tokens: 300 + 220 * lote.length,
+                    max_tokens: 800 + 350 * lote.length,
                     system: PROMPT,
+                    tools: [TOOL],
+                    tool_choice: { type: 'tool', name: TOOL.name },
                     messages: [{ role: 'user', content }],
                 }),
             });
@@ -154,9 +186,20 @@ FORMATO: responde SOLO con JSON válido, sin texto adicional:
         }
         const data = await resp.json();
         const usd = registrarCosto(data.usage, m);
-        const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-        let arr = [];
-        try { arr = extraerJSON(text).imagenes || []; } catch (e) { console.warn('Clasificador: respuesta no interpretable', text); throw new Error('respuesta no interpretable'); }
+        ultima = { stop_reason: data.stop_reason, content: data.content, n: lote.length };
+        const tool = (data.content || []).find(b => b.type === 'tool_use' && b.input);
+        let arr = tool && Array.isArray(tool.input.imagenes) ? tool.input.imagenes : null;
+        if (!arr) {
+            // Respaldo: JSON en texto
+            const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+            try { arr = extraerJSON(text).imagenes || null; } catch (e) { arr = null; }
+        }
+        if (!arr || !arr.length) {
+            console.warn('Clasificador: respuesta no interpretable', data);
+            const err = new Error(data.stop_reason === 'max_tokens' ? 'la respuesta se cortó' : 'respuesta no interpretable');
+            err.reintentable = true;
+            throw err;
+        }
         const out = lote.map((_, k) => {
             const o = arr.find(x => Number(x.n) === k + 1) || arr[k];
             return o ? normalizar(o) : null;
@@ -173,14 +216,23 @@ FORMATO: responde SOLO con JSON válido, sin texto adicional:
         const m = modelo();
         const res = new Map();
         let usd = 0, hechas = 0;
-        for (let i = 0; i < imagenes.length; i += LOTE) {
-            const lote = imagenes.slice(i, i + LOTE);
-            const r = await consultar(lote, m);
+        // Si una consulta no se puede interpretar, se reintenta partiéndola en dos (hasta lotes de 3)
+        const procesar = async (lote) => {
+            let r;
+            try { r = await consultar(lote, m); }
+            catch (e) {
+                if (!e.reintentable || lote.length <= 3) throw e;
+                const mitad = Math.ceil(lote.length / 2);
+                await procesar(lote.slice(0, mitad));
+                await procesar(lote.slice(mitad));
+                return;
+            }
             usd += r.usd;
             lote.forEach((im, k) => { if (r.out[k]) res.set(im.id, { ...r.out[k], modelo: m, ts: Date.now() }); });
             hechas += lote.length;
             if (onProgress) onProgress(hechas, imagenes.length);
-        }
+        };
+        for (let i = 0; i < imagenes.length; i += LOTE) await procesar(imagenes.slice(i, i + LOTE));
         return { res, usd, modelo: m };
     }
 
@@ -252,5 +304,5 @@ FORMATO: responde SOLO con JSON válido, sin texto adicional:
 
     function borrarEstadisticas() { write(LOG_KEY, []); }
 
-    window.GTXClasificador = { clasificar, puntaje, coincide, modelo, setModelo, MODELOS, registrarConfirmacion, estadisticas, borrarEstadisticas, _prompt: PROMPT };
+    window.GTXClasificador = { clasificar, puntaje, coincide, modelo, setModelo, MODELOS, registrarConfirmacion, estadisticas, borrarEstadisticas, _prompt: PROMPT, get ultimaRespuesta() { return ultima; } };
 })();
