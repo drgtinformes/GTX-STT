@@ -3379,8 +3379,96 @@ function postProcesarInforme(texto, dictado) {
     t = ensureCBCTParams(t, dictado);
     try { t = restaurarRangosDientes(t, dictado); } catch (e) { console.warn(e); }
     try { t = restaurarNomenclaturaEntera(t, dictado); } catch (e) { console.warn(e); }
+    try { t = convertirFechaNacimientoAEdad(t); } catch (e) { console.warn(e); } // fecha de nacimiento dictada -> edad en años y meses
     t = normalizarSaltos(t);
     return t;
+}
+
+// =====================================================================
+// FECHA DE NACIMIENTO -> EDAD (años y meses)
+// Si en el encabezado se dicta la fecha de nacimiento ("Fecha de nacimiento 14 de marzo del 2010",
+// "nacido el 14/03/2010", "F. nac.: 14-03-10"), se reemplaza esa línea por la edad calculada
+// ("16 años, 07 meses") a la fecha del informe (la fecha del encabezado; si no hay, hoy).
+// El cálculo lo hace el código, NO la IA (los modelos se equivocan en aritmética de fechas).
+// =====================================================================
+const _MESES_ES = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+const _RE_NACIMIENTO = /(?:fecha\s+(?:de\s+)?nacimiento|f(?:echa)?\.?\s*(?:de\s+)?nac(?:imiento)?\.?|nacid[oa]\s+(?:el\s+)?|naci[oó]\s+el\s+)\s*[:\-–]?\s*/i;
+
+// Convierte "14/03/2010", "14-3-10", "14.03.2010", "14 de marzo del 2010", "1° de marzo de 2010" en {d,m,y}
+function _parseFechaES(str) {
+    if (!str) return null;
+    const s = String(str).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/primero/g, '1').replace(/[º°]/g, '');
+    let d, m, y;
+    let r = s.match(/\b(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{2,4})\b/);
+    if (r) { d = +r[1]; m = +r[2]; y = r[3]; }
+    else {
+        r = s.match(/\b(\d{1,2})\s+(?:de\s+)?([a-z]+),?\s+(?:de(?:l)?\s+)?(?:ano\s+)?(\d{2,4})\b/);
+        if (!r || !_MESES_ES[r[2]]) return null;
+        d = +r[1]; m = _MESES_ES[r[2]]; y = r[3];
+    }
+    if (y.length === 2) { // año de 2 dígitos: si queda en el futuro, es del siglo pasado
+        const yy = +y, actual = new Date().getFullYear() % 100;
+        y = yy <= actual ? 2000 + yy : 1900 + yy;
+    } else y = +y;
+    if (y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const f = new Date(y, m - 1, d);
+    if (f.getMonth() !== m - 1) return null; // ej. 31 de febrero
+    return { d, m, y };
+}
+
+function _formatearEdad(nac, ref) {
+    let anos = ref.y - nac.y;
+    let meses = ref.m - nac.m;
+    if (ref.d < nac.d) meses--;
+    if (meses < 0) { anos--; meses += 12; }
+    if (anos < 0 || anos > 120) return null;
+    const mm = String(meses).padStart(2, '0') + (meses === 1 ? ' mes' : ' meses');
+    if (anos === 0) return mm;
+    return `${anos} ${anos === 1 ? 'año' : 'años'}, ${mm}`;
+}
+
+function convertirFechaNacimientoAEdad(texto) {
+    if (!texto || !_RE_NACIMIENTO.test(texto)) return texto;
+    const lineas = texto.split('\n');
+    // Encabezado = líneas antes de ANT. CLÍNICOS / QUE DESEA SABER / TIPO DE ESTUDIO
+    let fin = lineas.findIndex(l => /^\s*(ANT\.\s*CL[IÍ]NICOS|QUE DESEA SABER|TIPO DE ESTUDIO)/i.test(l));
+    if (fin < 0) fin = Math.min(lineas.length, 6);
+
+    const idxNac = [];
+    for (let i = 0; i < fin; i++) if (_RE_NACIMIENTO.test(lineas[i])) idxNac.push(i);
+    if (!idxNac.length) return texto;
+
+    // Fecha de referencia: la fecha del informe en el encabezado (otra línea con fecha); si no hay, hoy.
+    let ref = null;
+    for (let i = 1; i < fin && !ref; i++) {
+        if (idxNac.includes(i)) continue;
+        if (/años|meses/i.test(lineas[i])) continue;
+        ref = _parseFechaES(lineas[i]);
+    }
+    const hoy = new Date();
+    if (!ref) ref = { d: hoy.getDate(), m: hoy.getMonth() + 1, y: hoy.getFullYear() };
+
+    const yaHayEdad = lineas.slice(1, fin).some((l, k) => !idxNac.includes(k + 1) && /^\s*(edad\s*:?\s*)?\d{1,3}\s*(años|año|meses|mes)\b/i.test(l));
+    const avisar = (msg) => { try { if (typeof _avisosPostProceso !== 'undefined') _avisosPostProceso.push(msg); } catch (e) { /* noop */ } };
+    const borrar = [];
+
+    idxNac.forEach(i => {
+        const linea = lineas[i];
+        const resto = linea.slice(linea.search(_RE_NACIMIENTO)).replace(_RE_NACIMIENTO, '');
+        const nac = _parseFechaES(resto);
+        if (!nac) { avisar(`No pude leer la fecha de nacimiento "${linea.trim()}". Escribe la edad manualmente.`); return; }
+        const fNac = `${String(nac.d).padStart(2, '0')}/${String(nac.m).padStart(2, '0')}/${nac.y}`;
+        if (yaHayEdad) {
+            borrar.push(i);
+            avisar(`Se dictó edad y fecha de nacimiento (${fNac}); se conservó la edad dictada.`);
+            return;
+        }
+        const edad = _formatearEdad(nac, ref);
+        if (!edad) { avisar(`Fecha de nacimiento ${fNac} fuera de rango respecto a la fecha del informe. Revísala.`); return; }
+        lineas[i] = edad;
+        avisar(`Edad calculada desde la fecha de nacimiento ${fNac}: ${edad} (al ${String(ref.d).padStart(2, '0')}/${String(ref.m).padStart(2, '0')}/${ref.y}).`);
+    });
+    return lineas.filter((_, i) => !borrar.includes(i)).join('\n');
 }
 
 // "Dientes 1.2 a 2.2" dictado como RANGO: si la IA lo dejó como "1.2 y 2.2", se restaura la "a".
@@ -3481,8 +3569,9 @@ async function prepareDocument() {
         return null;
     }
 
-    // Auto-ajustar encabezados si corresponde a un Set Total
-    const adjustedText = adjustHeadersForSetTotal(text);
+    // Auto-ajustar encabezados si corresponde a un Set Total + convertir fecha de nacimiento dictada en edad
+    let adjustedText = adjustHeadersForSetTotal(text);
+    try { adjustedText = convertirFechaNacimientoAEdad(adjustedText); } catch (e) { console.warn(e); }
     if (adjustedText !== text) {
         text = adjustedText;
         transcriptionArea.value = text;
