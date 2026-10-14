@@ -173,6 +173,112 @@
         ta.scrollTop = Math.max(0, (ta.value.slice(0, start).split('\n').length - 3) * lh);
     }
 
+    // ---------- Foco en las líneas observadas ----------
+    // El modal desenfoca todo lo de atrás (backdrop-filter). Sobre ese desenfoque se pone una
+    // copia exacta del informe, alineada con el textarea, donde solo se ven las líneas
+    // observadas: quedan nítidas y en su lugar. Va dentro del modal, así no tapa la ventana.
+    const COPY_STYLES = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'wordSpacing',
+        'textTransform', 'textIndent', 'tabSize', 'paddingTop', 'paddingLeft', 'paddingBottom',
+        'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderRadius', 'textAlign'];
+    const Spot = {
+        el: null, marks: [],
+        /** @param {Array<{line:number, cita?:string}>} marks */
+        show(marks) {
+            this.marks = marks.filter(x => x.line >= 0);
+            this.render(true);
+            if (!this._onResize) this._onResize = () => this.render(false);
+            window.addEventListener('resize', this._onResize);
+        },
+        hide() {
+            if (this.el) { this.el.remove(); this.el = null; }
+            if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+            if (this._onResize) window.removeEventListener('resize', this._onResize);
+            this.marks = [];
+            this._last = '';
+        },
+        focus(line) {
+            if (!this.el) return;
+            let target = null;
+            this.el.querySelectorAll('.rv-spot-line.on').forEach(d => {
+                const f = Number(d.dataset.line) === line;
+                d.classList.toggle('focus', f);
+                if (f) target = d;
+            });
+            // Si la línea está fuera de la vista del informe, desplazarlo hasta ella
+            const ta = document.getElementById('transcription');
+            if (target && ta) {
+                const top = target.offsetTop, bottom = top + target.offsetHeight;
+                if (top < ta.scrollTop || bottom > ta.scrollTop + ta.clientHeight) ta.scrollTop = Math.max(0, top - ta.clientHeight / 3);
+            }
+        },
+        render(scrollToFirst) {
+            const ta = document.getElementById('transcription');
+            if (!modal || !ta || !this.marks.length || !ta.offsetParent) { if (this.el) { this.el.remove(); this.el = null; } return; }
+            const lines = ta.value.split('\n');
+            const byLine = new Map();
+            for (const x of this.marks) if (x.line < lines.length) { if (!byLine.has(x.line)) byLine.set(x.line, []); if (x.cita) byLine.get(x.line).push(x.cita); }
+            if (!byLine.size) return;
+            if (!this.el) {
+                this.el = document.createElement('div');
+                this.el.className = 'rv-spot';
+                this.el.setAttribute('aria-hidden', 'true');
+                modal.insertBefore(this.el, modal.firstChild);
+            }
+            const el = this.el, cs = getComputedStyle(ta);
+            for (const k of COPY_STYLES) el.style[k] = cs[k];
+            // El área de texto del textarea excluye su barra de desplazamiento
+            const bw = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+            const scrollbar = Math.max(0, ta.offsetWidth - ta.clientWidth - bw);
+            el.style.paddingRight = (parseFloat(cs.paddingRight) || 0) + scrollbar + 'px';
+            el.innerHTML = lines.map((l, i) => {
+                const on = byLine.has(i);
+                let html = esc(l) || '​';
+                if (on) {
+                    for (const c of byLine.get(i)) {
+                        const ec = esc(c.trim());
+                        if (ec && html.includes(ec)) { html = html.replace(ec, `<mark>${ec}</mark>`); break; }
+                    }
+                }
+                return `<div class="rv-spot-line${on ? ' on' : ''}" data-line="${i}">${html}</div>`;
+            }).join('');
+            // Llevar las líneas observadas a la vista dentro del textarea (todas, si caben)
+            const on = [...el.querySelectorAll('.rv-spot-line.on')];
+            if (scrollToFirst && on.length) {
+                const r0 = ta.getBoundingClientRect();
+                if (r0.bottom < 0 || r0.top > window.innerHeight) ta.scrollIntoView({ block: 'nearest' });
+                const top = on[0].offsetTop, bottom = on[on.length - 1].offsetTop + on[on.length - 1].offsetHeight;
+                const vis0 = ta.scrollTop, vis1 = ta.scrollTop + ta.clientHeight;
+                if (top < vis0 || bottom > vis1) {
+                    const span = bottom - top;
+                    ta.scrollTop = span <= ta.clientHeight * 0.85
+                        ? Math.max(0, top - (ta.clientHeight - span) / 2)
+                        : Math.max(0, top - ta.clientHeight / 3);
+                }
+            }
+            this._last = '';   // contenido nuevo: volver a fijar posición y desplazamiento
+            this.place(ta);
+            if (!this._raf) {
+                // Seguir al textarea si la página se desplaza o se anima mientras el modal está abierto
+                const tick = () => {
+                    if (!this.el) { this._raf = 0; return; }
+                    this.place(document.getElementById('transcription'));
+                    this._raf = requestAnimationFrame(tick);
+                };
+                this._raf = requestAnimationFrame(tick);
+            }
+        },
+        place(ta) {
+            const el = this.el;
+            if (!el || !ta) return;
+            const r = ta.getBoundingClientRect();
+            const k = `${r.left}|${r.top}|${ta.offsetWidth}|${ta.offsetHeight}|${ta.scrollTop}`;
+            if (k === this._last) return;
+            this._last = k;
+            Object.assign(el.style, { left: r.left + 'px', top: r.top + 'px', width: ta.offsetWidth + 'px', height: ta.offsetHeight + 'px' });
+            el.scrollTop = ta.scrollTop;
+        },
+    };
+
     let disabledSession = false;
 
     const TIPO_IA = {
@@ -241,10 +347,19 @@
             </div>`).join('');
         m.querySelector('.revisor-off').checked = false;
         m.classList.remove('hidden');
+        Spot.show(issues.map(x => ({ line: x.line, cita: x.ia && x.o ? x.o.cita : '' })));
         return new Promise(resolve => {
+            // Al pasar el mouse sobre una observación se resalta su línea
+            const onOver = (e) => {
+                const it = e.target.closest('.revisor-item');
+                Spot.focus(it ? issues[Number(it.dataset.k)].line : -1);
+            };
+            m.addEventListener('mouseover', onOver);
             const done = (val) => {
+                Spot.hide();
                 m.classList.add('hidden');
                 m.removeEventListener('click', onClick);
+                m.removeEventListener('mouseover', onOver);
                 if (m.querySelector('.revisor-off').checked) disabledSession = true;
                 resolve(val);
             };
@@ -259,6 +374,7 @@
                         ap.closest('.revisor-item').classList.add('done');
                         ap.textContent = 'Aplicado ✓';
                         ap.disabled = true;
+                        Spot.render(false);   // mostrar la línea ya corregida
                     } else if (window.GTXToast) {
                         window.GTXToast('No encontré ese texto exacto; corrígelo a mano.', 'warn');
                     }
