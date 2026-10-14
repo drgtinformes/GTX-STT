@@ -1390,6 +1390,95 @@ function stopDeepgramRecording(immediate = false) {
 }
 
 // =========================================================================
+// === EDICIÓN MANUAL DURANTE EL DICTADO EN VIVO (Soniox / Speechmatics) ===
+// =========================================================================
+// Estos motores reescriben el cuadro completo en cada mensaje (base + finales + provisional),
+// así que una corrección hecha a mano mientras se grababa se perdía en el mensaje siguiente.
+// Ahora, si el cuadro cambió desde la última vez que lo pintó el motor, la versión editada
+// pasa a ser la nueva base y el dictado continúa a continuación, sin detener la grabación.
+const vivo = { base: '', sysBase: '', pintado: null, cola: '', comprometido: '', saltar: 0, sysAsignado: null };
+
+const _vivoSep = (s) => (s.length > 0 && !s.endsWith(' ') && !s.endsWith('\n')) ? ' ' : '';
+const _vivoUnir = (a, b) => b ? a + _vivoSep(a) + b : a;
+const _vivoContar = (s) => (String(s || '').match(/\S+/g) || []).length;
+function _vivoQuitarPalabras(s, n) {
+    if (n <= 0) return s;
+    const re = /\S+/g;
+    let m, k = 0, fin = 0;
+    while (k < n && (m = re.exec(s))) { fin = m.index + m[0].length; k++; }
+    return k < n ? '' : s.slice(fin);
+}
+
+function vivoIniciar(base) {
+    vivo.base = base; vivo.sysBase = base; vivo.pintado = null; vivo.cola = '';
+    vivo.comprometido = ''; vivo.saltar = 0; vivo.sysAsignado = null;
+}
+
+// Llamar al recibir cada mensaje, ANTES de sumar los tokens nuevos.
+// Devuelve true si el usuario editó el cuadro: el llamador debe reiniciar su acumulado final.
+function vivoAbsorberEdicion() {
+    if (vivo.pintado === null || transcriptionArea.value === vivo.pintado) return false;
+    let v = transcriptionArea.value;
+    // Si el aprendizaje automático ya sincronizó lastSystemText, las ediciones anteriores
+    // ya se aprendieron: la base del sistema pasa a ser la del usuario.
+    const aprendido = vivo.sysAsignado !== null && lastSystemText !== vivo.sysAsignado;
+    if (aprendido) vivo.sysBase = vivo.base;
+    vivo.sysBase = _vivoUnir(vivo.sysBase, vivo.comprometido);
+    if (vivo.cola && v.endsWith(vivo.cola)) {
+        // Editó solo texto ya confirmado: la parte provisional se quita y volverá como final.
+        v = v.slice(0, v.length - vivo.cola.length);
+        vivo.saltar = 0;
+    } else if (vivo.cola) {
+        // Corrigió la parte provisional (o escribió después de ella): se respeta su versión
+        // y se descartan las próximas palabras finales equivalentes para no duplicarlas.
+        vivo.saltar = _vivoContar(vivo.cola);
+        vivo.sysBase = _vivoUnir(vivo.sysBase, vivo.cola.trim());
+    } else {
+        vivo.saltar = 0;
+    }
+    vivo.base = v;
+    if (aprendido && lastSystemText === transcriptionArea.value.trim()) vivo.sysBase = v;
+    vivo.comprometido = '';
+    vivo.cola = '';
+    return true;
+}
+
+// Pinta base + finales + provisional sin mover el cursor si el usuario está editando más arriba.
+// Devuelve el acumulado final (posiblemente recortado) para que el llamador lo guarde.
+function vivoPintar(acumFinal, interimTxt) {
+    let acum = acumFinal || '', interim = interimTxt || '', mostrarFinal = true;
+    if (vivo.saltar) {
+        const n = _vivoContar(acum);
+        if (n >= vivo.saltar) { acum = _vivoQuitarPalabras(acum, vivo.saltar); vivo.saltar = 0; }
+        else { interim = _vivoQuitarPalabras(interim, vivo.saltar - n); mostrarFinal = false; }
+    }
+    const committed = mostrarFinal ? applyCorrections(acum.trim()) : '';
+    finalTranscript = _vivoUnir(vivo.base, committed);
+    const it = interim.trim();
+    const cola = it ? _vivoSep(finalTranscript) + it : '';
+    const nuevo = finalTranscript + cola;
+
+    const ta = transcriptionArea;
+    if (ta.value !== nuevo) {
+        const foco = document.activeElement === ta;
+        const s = ta.selectionStart, e = ta.selectionEnd, top = ta.scrollTop;
+        const editandoArriba = foco && e < ta.value.length - vivo.cola.length;
+        ta.value = nuevo;
+        if (editandoArriba) { ta.setSelectionRange(s, e); ta.scrollTop = top; }
+        else ta.scrollTop = ta.scrollHeight;
+    }
+    vivo.pintado = nuevo;
+    vivo.cola = cola;
+    vivo.comprometido = committed;
+
+    lastDictatedText = finalTranscript;
+    lastSystemText = _vivoUnir(vivo.sysBase, committed);
+    vivo.sysAsignado = lastSystemText;
+    localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+    return acum;
+}
+
+// =========================================================================
 // === MOTOR SONIOX (Español / Multilingüe, streaming en tiempo real) ======
 // =========================================================================
 // Soniox autentica con la key en el PRIMER mensaje JSON (no por header/subprotocolo).
@@ -1452,6 +1541,7 @@ async function startSonioxRecording() {
             // Lo ya escrito se conserva; Soniox añade a partir de aquí.
             sonioxBaseTranscript = transcriptionArea.value || finalTranscript || '';
             sonioxSessionFinal = '';
+            vivoIniciar(sonioxBaseTranscript);
 
             // Configuración: DEBE ser el primer mensaje y de tipo texto.
             sonioxWs.send(JSON.stringify({
@@ -1491,6 +1581,9 @@ async function startSonioxRecording() {
                 return;
             }
 
+            // Si corregiste a mano mientras grababa, tu versión pasa a ser la base.
+            if (vivoAbsorberEdicion()) sonioxSessionFinal = '';
+
             const tokens = data.tokens || [];
             let interim = '';
             for (const tk of tokens) {
@@ -1505,19 +1598,8 @@ async function startSonioxRecording() {
             sonioxSessionFinal = limpiarMarcasSoniox(sonioxSessionFinal);
             interim = limpiarMarcasSoniox(interim);
 
-            // Comprometido = texto previo (base) + corrección del acumulado final de Soniox.
-            const committed = applyCorrections(sonioxSessionFinal.trim());
-            const base = sonioxBaseTranscript;
-            const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
-            finalTranscript = base + (committed ? sep + committed : '');
-
-            // Vista previa: comprometido + interino (sin corregir aún).
-            const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
-            transcriptionArea.value = finalTranscript + (interim.trim() ? sepI + interim.trim() : '');
-            lastDictatedText = finalTranscript;
-            lastSystemText = finalTranscript;
-            localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
-            transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+            // Comprometido = base (con tus ediciones) + acumulado final corregido; luego el interino.
+            sonioxSessionFinal = vivoPintar(sonioxSessionFinal, interim);
         };
 
         sonioxWs.onerror = (err) => {
@@ -1629,6 +1711,7 @@ async function startSpeechmaticsRecording(useVocab = true) {
 
             smBaseTranscript = transcriptionArea.value || finalTranscript || '';
             smSessionFinal = '';
+            vivoIniciar(smBaseTranscript);
             smSeqNo = 0;
             smStarted = false;
             smPendingAudio = [];
@@ -1677,21 +1760,13 @@ async function startSpeechmaticsRecording(useVocab = true) {
 
                 case 'AddPartialTranscript':
                 case 'AddTranscript': {
+                    // Si corregiste a mano mientras grababa, tu versión pasa a ser la base.
+                    if (vivoAbsorberEdicion()) smSessionFinal = '';
                     const text = (data.metadata && data.metadata.transcript) || '';
                     if (data.message === 'AddTranscript') smSessionFinal += text;
 
-                    const committed = applyCorrections(smSessionFinal.trim());
-                    const base = smBaseTranscript;
-                    const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
-                    finalTranscript = base + (committed ? sep + committed : '');
-
                     const interim = data.message === 'AddPartialTranscript' ? text.trim() : '';
-                    const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
-                    transcriptionArea.value = finalTranscript + (interim ? sepI + interim : '');
-                    lastDictatedText = finalTranscript;
-                    lastSystemText = finalTranscript;
-                    localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
-                    transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+                    smSessionFinal = vivoPintar(smSessionFinal, interim);
                     return;
                 }
 
@@ -1945,6 +2020,62 @@ clearBtn.addEventListener('click', () => {
         ocultarPanelCambios();
     }
 });
+
+// === Limpieza automática tras guardar en Word o enviar por Gmail ===
+// El informe final queda en el historial (reemplaza la versión formateada del mismo
+// paciente si es reciente) y se ofrece "Deshacer" por unos segundos, por si después
+// de guardar el Word también quieres enviarlo por Gmail.
+function limpiarTrasExportar(origen) {
+    const texto = transcriptionArea.value;
+    if (!texto.trim() || isRecording) return;
+
+    try {
+        const primera = (texto.split('\n').find(l => l.trim()) || '').trim();
+        const ultimo = dictationHistory[0];
+        const reciente = ultimo && (Date.now() - Number(ultimo.id)) < 3 * 60 * 60 * 1000;
+        if (reciente && ultimo.patientName === primera) {
+            if (ultimo.text !== texto) {
+                ultimo.text = texto;
+                localStorage.setItem('dictationHistory', JSON.stringify(dictationHistory));
+            }
+        } else {
+            saveToHistory(texto);
+        }
+    } catch (e) { console.warn('Historial:', e); }
+
+    transcriptionArea.value = '';
+    finalTranscript = '';
+    lastSystemText = '';
+    lastDictatedText = '';
+    localStorage.removeItem(AUTOSAVE_KEY);
+    if (typeof ocultarPanelCambios === 'function') ocultarPanelCambios();
+
+    let box = document.getElementById('gtx-toasts');
+    if (!box) { box = document.createElement('div'); box.id = 'gtx-toasts'; document.body.appendChild(box); }
+    const t = document.createElement('div');
+    t.className = 'gtx-toast ok';
+    t.style.cssText = 'display:flex;align-items:center;gap:12px';
+    t.innerHTML = `<span>${origen}: cuadro de texto limpio.</span>`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Deshacer';
+    btn.style.cssText = 'margin-left:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:inherit;font:inherit;cursor:pointer';
+    const cerrar = () => { t.classList.add('out'); setTimeout(() => t.remove(), 300); };
+    btn.addEventListener('click', () => {
+        if (transcriptionArea.value.trim()) {
+            if (!confirm('El cuadro ya tiene texto nuevo. ¿Reemplazarlo por el informe anterior?')) return;
+        }
+        transcriptionArea.value = texto;
+        finalTranscript = texto;
+        lastSystemText = texto;
+        localStorage.setItem(AUTOSAVE_KEY, texto);
+        transcriptionArea.focus();
+        cerrar();
+    });
+    t.appendChild(btn);
+    box.appendChild(t);
+    setTimeout(cerrar, 15000);
+}
 
 // === Lógica de Configuración y Modal ===
 const openaiKeyInput = document.getElementById('openai-key-input');
@@ -3678,6 +3809,8 @@ if (generateWordBtn) {
         const docData = await prepareDocument();
         if (docData) {
             window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            limpiarTrasExportar('Word guardado');
+            return;
         }
         lastDictatedText = transcriptionArea.value.trim();
     });
@@ -4255,6 +4388,7 @@ if (sendGmailBtn) {
             if (window.GTXOrders) window.GTXOrders.onSent(thread, templateSelect.value);
 
             alert("¡Informe enviado con éxito por Gmail!");
+            limpiarTrasExportar('Enviado por Gmail');
             sendGmailBtn.innerHTML = '<i data-lucide="check"></i> Enviado';
             setTimeout(() => {
                 sendGmailBtn.innerHTML = originalText;

@@ -208,7 +208,12 @@
             return { items, nota: '' };
         } catch (e) {
             console.warn('Revisor IA:', e);
-            return { items: [], nota: `La revisión con IA no respondió (${e.message}); se muestran solo las reglas.` };
+            const m = String(e && e.message || '');
+            let causa = m;
+            if (/x-api-key|authentication|401/i.test(m)) causa = 'clave de Anthropic inválida o revocada — actualízala en ⚙ Configuración';
+            else if (/credit|billing|balance/i.test(m)) causa = 'sin saldo en la cuenta de Anthropic';
+            else if (/overloaded|529|rate|429/i.test(m)) causa = 'Anthropic está saturado, intenta de nuevo en un momento';
+            return { items: [], nota: `La revisión con IA no respondió (${causa}); se muestran solo las reglas.` };
         }
     }
 
