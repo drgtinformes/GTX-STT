@@ -209,13 +209,13 @@
         const withIds = (pfx, slots) => slots.map((s, i) => ({ id: `${pfx}-${i + 1}`, ...s }));
         return [
             {
-                // Columnas dobles de los extremos: arriba molares, abajo premolares (ambos lados, ambas arcadas)
+                // Columnas dobles de los extremos — superior: arriba premolares, abajo molares; inferior: arriba molares, abajo premolares
                 id: 'fmx18', name: 'Set total (18)',
                 slots: withIds('fmx18', [
-                    L(0, 0, PA('sup', 'molares', 'der')), L(0, 262, PA('sup', 'premolares', 'der')),
+                    L(0, 0, PA('sup', 'premolares', 'der')), L(0, 262, PA('sup', 'molares', 'der')),
                     P(332, 0, PA('sup', 'canino', 'der')), P(589, 0, PA('sup', 'incisivos', 'der')),
                     P(846, 0, PA('sup', 'incisivos', 'izq')), P(1103, 0, PA('sup', 'canino', 'izq')),
-                    L(1360, 0, PA('sup', 'molares', 'izq')), L(1360, 262, PA('sup', 'premolares', 'izq')),
+                    L(1360, 0, PA('sup', 'premolares', 'izq')), L(1360, 262, PA('sup', 'molares', 'izq')),
                     { x: 470, y: 380, w: 320, h: 260, label: 'BW der.', t: BW('der') },
                     { x: 890, y: 380, w: 320, h: 260, label: 'BW izq.', t: BW('izq') },
                     L(0, 560, PA('inf', 'molares', 'der')), L(0, 822, PA('inf', 'premolares', 'der')),
@@ -580,6 +580,9 @@
             }
             this.template = (data && data.template && Array.isArray(data.template.slots)) ? data.template : null;
             if (this.template) {
+                // Plantilla predeterminada: tomar la definición vigente (rótulos y etiquetas pueden haber cambiado)
+                const b = BUILTIN_TEMPLATES.find(t => t.id === this.template.id);
+                if (b) this.template = JSON.parse(JSON.stringify({ id: b.id, name: b.name, slots: b.slots }));
                 const ids = new Set(this.template.slots.map(s => s.id));
                 const used = new Set();
                 for (const it of this.items) {
@@ -742,7 +745,7 @@
             it.x = r.x + (r.w - nw * it.s) / 2;
             it.y = r.y + (r.h - nh * it.s) / 2;
         }
-        _fitToSlot(it, sl) { this._fitInto(it, sl); it.slot = sl.id; }
+        _fitToSlot(it, sl) { this._fitInto(it, sl); it.slot = sl.id; delete it.complemento; }
 
         _tplBounds() {
             if (!this.template || !this.template.slots.length) return null;
@@ -883,10 +886,9 @@
         /** Etiquetas clínicas de una casilla (las plantillas guardadas antes de esta versión no las traen). */
         _slotTags(sl) {
             if (!sl) return null;
-            if (sl.t) return sl.t;
             const b = this.template && BUILTIN_TEMPLATES.find(t => t.id === this.template.id);
             const bs = b && b.slots.find(s => s.id === sl.id);
-            return (bs && bs.t) || null;
+            return (bs && bs.t) || sl.t || null;
         }
 
         /** JPEG de la imagen tal como se ve (rotación y espejo aplicados), lado mayor ≤ max px. */
@@ -929,7 +931,7 @@
             b.style.display = '';
             const low = c.conf < 0.7 || !!c.adv;
             b.className = 'cb-badge' + (low ? ' low' : '');
-            b.textContent = (low ? '⚠ ' : '') + this._badgeText(c);
+            b.textContent = (low ? '⚠ ' : '') + (it.complemento ? 'Compl. · ' : '') + this._badgeText(c);
             b.title = [c.razon, c.dientes && c.dientes.length ? 'Dientes: ' + c.dientes.join(', ') : '', c.adv ? '⚠ ' + c.adv : '', c.modelo ? 'Modelo: ' + c.modelo : '']
                 .filter(Boolean).join('\n');
         }
@@ -975,9 +977,19 @@
                 done.add(x.it);
                 used.add(x.s.sl.id);
             }
-            const left = its.filter(it => !done.has(it));
-            this._trayPlace(left);
-            return { placed: done.size, left: left.length };
+            its.forEach(it => { delete it.complemento; });
+            // Las que sobran: si su casilla ideal ya está ocupada, es un complemento de esa región.
+            // Se ordenan como la plantilla para que queden cerca, en el mismo orden de lectura.
+            const best = (it) => {
+                let bi = Infinity, bp = -Infinity;
+                slots.forEach((s, i) => { const p = C.puntaje(it.cls, s.t); if (p > bp) { bp = p; bi = i; } });
+                return { i: bp > -Infinity ? bi : Infinity, ok: bp > -Infinity };
+            };
+            const left = its.filter(it => !done.has(it)).map(it => ({ it, b: best(it) }))
+                .sort((a, b) => (a.b.i - b.b.i) || (b.it.cls.conf - a.it.cls.conf));
+            left.forEach(x => { if (x.b.ok) x.it.complemento = true; });
+            this._trayPlace(left.map(x => x.it));
+            return { placed: done.size, left: left.length, complementos: left.filter(x => x.b.ok).length };
         }
 
         /** Clasifica todas las imágenes del tablero y las ubica en la plantilla (activa o sugerida). */
@@ -1019,7 +1031,8 @@
                 const dud = clas.filter(it => it.cls.conf < 0.7 || it.cls.adv).length;
                 this._notice(`Clasificadas ${clas.length}/${list.length} (US$ ${r.usd.toFixed(3)}).${tplMsg}` +
                     (dud ? ` ${dud} dudosa(s) marcadas con ⚠.` : '') +
-                    (pl && pl.left ? ` ${pl.left} sin casilla quedaron a la derecha.` : '') +
+                    (pl && pl.complementos ? ` ${pl.complementos} complemento(s) a la derecha.` : '') +
+                    (pl && pl.left - (pl.complementos || 0) > 0 ? ` ${pl.left - (pl.complementos || 0)} sin casilla posible quedaron a la derecha.` : '') +
                     ' Revisa, corrige arrastrando y usa "Confirmar ubicación" para medir la precisión.', false, 15000);
             } catch (e) {
                 console.error('Clasificador:', e);
@@ -1509,6 +1522,16 @@
          */
         arrange() {
             if (!this.items.length) return;
+            if (this.template && window.GTXClasificador && this.items.some(it => it.cls) && this.template.slots.some(sl => this._slotTags(sl))) {
+                // Con clasificación guardada: ubicar según tipo/región/lado; las no clasificadas llenan lo que quede
+                this._placeByClass();
+                const loose = this.items.filter(it => !it.slot && !it.cls).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+                if (loose.length) this._fillTemplate(loose);
+                this._renderAll();
+                this.fit();
+                this._save();
+                return;
+            }
             if (this.template) {
                 // Con plantilla: re-encajar cada imagen en su casilla y llenar las vacías con las sueltas
                 for (const it of this.items) {
