@@ -3757,11 +3757,20 @@ async function prepareDocument() {
         finalTranscript = text;
     }
 
-    const templateId = templateSelect.value;
+    return construirDocumento(text, templateSelect.value);
+}
+
+/**
+ * Genera el Word a partir de un texto y una plantilla, sin leer ni tocar el editor.
+ * Lo usa prepareDocument y también la revisión de tanda (tanda.js) para regenerar un
+ * informe corregido. Con { silencioso: true } no muestra alert: lanza el error.
+ */
+async function construirDocumento(text, templateId, opciones = {}) {
+    const avisar = (msg) => { if (opciones.silencioso) throw new Error(msg); alert(msg); };
     const templateData = templateManager.getTemplate(templateId);
-    
+
     if (!templateData) {
-        alert("Selecciona una plantilla válida.");
+        avisar("Selecciona una plantilla válida.");
         return null;
     }
 
@@ -3860,8 +3869,21 @@ async function prepareDocument() {
             linebreaks: true,
         });
         
+        // Negrita en rótulos del cuerpo (negrita.js): se marca el cuerpo y se procesa tras el render
+        const _neg = window.GTXNegrita;
+        const _cuerpo = dictValues.INFORME;
+        if (_neg && _neg.activa()) {
+            dictValues.DIAGNOSTICO = _neg.marcar(dictValues.DIAGNOSTICO);
+            dictValues.INFORME = _neg.marcar(dictValues.INFORME);
+        }
+
         doc.render(dictValues);
-        
+
+        if (_neg) {
+            try { _neg.aplicarZip(doc.getZip(), _cuerpo); }
+            catch (e) { console.warn('Negrita en rótulos no aplicada:', e); }
+        }
+
         const out = doc.getZip().generate({
             type: "blob",
             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -3879,14 +3901,19 @@ async function prepareDocument() {
             fileNameBase = `${year}_${month}_${day}_${dictValues.PACIENTE.toUpperCase()}`;
         }
         
-        return { blob: out, fileNameBase: fileNameBase, patientName: dictValues.PACIENTE };
-        
+        return {
+            blob: out, fileNameBase: fileNameBase, patientName: dictValues.PACIENTE,
+            texto: text, templateId: templateId, templateName: templateData.name, estudio: dictValues.ESTUDIO,
+        };
+
     } catch (error) {
         console.error("Error al preparar documento", error);
+        if (opciones.silencioso) throw error;
         alert("Hubo un error técnico al procesar la plantilla:\n" + error.message);
         return null;
     }
 }
+window.GTXConstruirDocumento = construirDocumento;
 
 // Inicializar UI
 updateTemplateUI();
@@ -3900,11 +3927,14 @@ if (generateWordBtn) {
             window.saveAs(docData.blob, docData.fileNameBase + ".docx");
             // Paciente de un lote: el informe también queda guardado en el lote para el envío conjunto
             if (window.GTXLotes && window.GTXLotes.activo) {
+                const _act = window.GTXLotes.activo;
                 const ok = await window.GTXLotes.guardarInforme(docData);
+                if (window.GTXTanda) window.GTXTanda.registrar(docData, ok ? { via: 'lote', loteKey: _act.key, pid: _act.pid } : { via: 'word' });
                 if (!ok) return;
                 limpiarTrasExportar('Word guardado y agregado al lote');
                 return;
             }
+            if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'word' });
             limpiarTrasExportar('Word guardado');
             return;
         }
@@ -3957,6 +3987,7 @@ if (generatePdfBtn) generatePdfBtn.addEventListener('click', async () => {
 
         // Generar y guardar PDF
         await html2pdf().set(opt).from(container).save();
+        if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'pdf' });
 
         // Restaurar botón
         generatePdfBtn.innerHTML = originalText;
@@ -4428,7 +4459,11 @@ if (sendGmailBtn) {
         if (window.GTXLotes && window.GTXLotes.activo) {
             const docData = await prepareDocument();
             if (!docData) return;
-            if (await window.GTXLotes.guardarInforme(docData)) limpiarTrasExportar('Informe agregado al lote');
+            const _act = window.GTXLotes.activo;
+            if (await window.GTXLotes.guardarInforme(docData)) {
+                if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'lote', loteKey: _act.key, pid: _act.pid });
+                limpiarTrasExportar('Informe agregado al lote');
+            }
             return;
         }
         const originalText = sendGmailBtn.innerHTML;
@@ -4490,6 +4525,7 @@ if (sendGmailBtn) {
             // 5. Enviar respuesta
             await sendReplyWithAttachment(thread, docData.blob, docData.fileNameBase + ".docx");
             if (window.GTXOrders) window.GTXOrders.onSent(thread, templateSelect.value);
+            if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'gmail', threadId: thread.id });
 
             alert("¡Informe enviado con éxito por Gmail!");
             limpiarTrasExportar('Enviado por Gmail');

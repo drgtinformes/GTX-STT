@@ -515,6 +515,20 @@
         return true;
     }
 
+    /**
+     * Reemplaza el Word guardado de un paciente de un lote (lo usa la revisión de tanda al
+     * aplicar una corrección). Devuelve 'ok', 'enviado' (el lote ya salió) o 'no-encontrado'.
+     */
+    async function reemplazarInforme(key, pid, docData) {
+        const rec = (actual && actual.key === key) ? actual : await dbGet(key);
+        const p = rec && rec.pacientes.find(x => x.id === pid);
+        if (!p || !p.informe) return 'no-encontrado';
+        p.informe = { filename: p.informe.filename, blob: docData.blob, ts: Date.now() };
+        await dbPut(rec);
+        if (actual && actual.key === key) actual = rec;
+        return rec.enviado ? 'enviado' : 'ok';
+    }
+
     // =====================================================================
     // Envío: correo NUEVO con todos los Word
     // =====================================================================
@@ -571,6 +585,13 @@
         if (!listos.length) { toast('Todavía no hay informes guardados en el lote.', 'warn'); return; }
         const pend = actual.pacientes.filter(p => p.estado === 'pendiente');
         if (pend.length && !confirm(`Faltan ${pend.length} paciente(s) por informar:\n${pend.map(p => '• ' + p.nombre).join('\n')}\n\n¿Enviar igual los ${listos.length} informe(s) listos?`)) return;
+        // Revisión de tanda: avisar si hay informes de este lote que todavía no se revisaron
+        if (window.GTXTanda) {
+            try {
+                const sinRevisar = await window.GTXTanda.pendientesDeLote(actual.key);
+                if (sinRevisar.length && !confirm(`Hay ${sinRevisar.length} informe(s) de este lote sin pasar por "Revisar tanda":\n${sinRevisar.map(n => '• ' + n).join('\n')}\n\n¿Enviar igual?`)) return;
+            } catch (e) { /* noop */ }
+        }
         if (actual.enviado && !confirm(`Este lote ya se envió el ${new Date(actual.enviado.ts).toLocaleString('es-CL')} a ${actual.enviado.to}. ¿Enviarlo otra vez?`)) return;
         if (!confirm(`Se enviará un correo NUEVO a:\n${to}\n\nAsunto: ${asunto}\nAdjuntos: ${listos.length} informe(s) Word\n\n¿Enviar?`)) return;
 
@@ -894,7 +915,7 @@
     }
 
     window.GTXLotes = {
-        esLote, infoAsunto, clave, enviado, abrir, guardarInforme, mostrarLista, siguiente,
+        esLote, infoAsunto, clave, enviado, abrir, guardarInforme, reemplazarInforme, mostrarLista, siguiente,
         get activo() { return pacienteActivo() ? { key: activo.key, pid: activo.pid, nombre: pacienteActivo().nombre } : null; },
         salir: () => setActivo(null),
         // para pruebas
