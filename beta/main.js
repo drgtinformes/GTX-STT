@@ -3597,8 +3597,26 @@ function _formatearEdad(nac, ref) {
     return `${anos} ${anos === 1 ? 'año' : 'años'}, ${mm}`;
 }
 
+// ¿La plantilla tiene un campo de fecha de nacimiento? (entonces la fecha dictada se conserva y NO se pasa a edad)
+const _cachePlantillaNac = new Map();
+function plantillaPideFechaNacimiento(templateId) {
+    try {
+        const t = templateId && templateManager.getTemplate(templateId);
+        if (!t || !t.base64) return false;
+        const k = templateId + ':' + t.base64.length;
+        if (!_cachePlantillaNac.has(k)) {
+            const zip = new PizZip(base64ToArrayBuffer(t.base64));
+            const txt = Object.keys(zip.files).filter(n => /^word\/(document|header\d*|footer\d*)\.xml$/.test(n))
+                .map(n => zip.file(n).asText().replace(/<[^>]+>/g, '')).join(' ');
+            _cachePlantillaNac.set(k, /\{\s*FECHA[ _](DE[ _])?NACIMIENTO\s*\}/i.test(txt));
+        }
+        return _cachePlantillaNac.get(k);
+    } catch (e) { return false; }
+}
+
 function convertirFechaNacimientoAEdad(texto) {
     if (!texto || !_RE_NACIMIENTO.test(texto)) return texto;
+    if (typeof templateSelect !== 'undefined' && templateSelect && plantillaPideFechaNacimiento(templateSelect.value)) return texto;
     const lineas = texto.split('\n');
     // Encabezado = líneas antes de ANT. CLÍNICOS / QUE DESEA SABER / TIPO DE ESTUDIO
     let fin = lineas.findIndex(l => /^\s*(ANT\.\s*CL[IÍ]NICOS|QUE DESEA SABER|TIPO DE ESTUDIO)/i.test(l));
@@ -3802,8 +3820,19 @@ async function construirDocumento(text, templateId, opciones = {}) {
         let rawName = headerLines[0].toLowerCase();
         dictValues.PACIENTE = rawName.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
         
+        // Fecha de nacimiento (plantillas con el campo {FECHA DE NACIMIENTO}, p. ej. Lo Fontecilla):
+        // la línea "Fecha de nacimiento: DD/MM/AAAA" va a su campo y no se confunde con la fecha del informe
+        const _sinNacimiento = [];
+        headerLines.slice(1).forEach(line => {
+            if (_RE_NACIMIENTO.test(line) && !dictValues.FECHA_NACIMIENTO) {
+                const resto = line.slice(line.search(_RE_NACIMIENTO)).replace(_RE_NACIMIENTO, '').trim();
+                const f = _parseFechaES(resto);
+                dictValues.FECHA_NACIMIENTO = f ? `${String(f.d).padStart(2, '0')}/${String(f.m).padStart(2, '0')}/${f.y}` : resto;
+            } else _sinNacimiento.push(line);
+        });
+
         // Procesar las líneas restantes buscando patrones (Edad, Doctor, Fecha)
-        const remainingLines = headerLines.slice(1);
+        const remainingLines = _sinNacimiento;
         remainingLines.forEach((line, index) => {
             const l = line.toLowerCase();
             // Detectar Fecha: busca meses o formato de fecha
@@ -3839,6 +3868,13 @@ async function construirDocumento(text, templateId, opciones = {}) {
         dictValues.FECHA = `${now.getDate()} de ${months[now.getMonth()]} del ${now.getFullYear()}`;
     }
 
+    // Alias de campos que usan algunas plantillas (Lo Fontecilla / Schilling): "Fecha de Examen" = fecha del informe
+    const _fnac = dictValues.FECHA_NACIMIENTO || "";
+    Object.assign(dictValues, {
+        'FECHA DE NACIMIENTO': _fnac, 'FECHA NACIMIENTO': _fnac, FECHA_NACIMIENTO: _fnac, FECHA_DE_NACIMIENTO: _fnac,
+        'FECHA DE EXAMEN': dictValues.FECHA, 'FECHA EXAMEN': dictValues.FECHA, FECHA_EXAMEN: dictValues.FECHA, FECHA_DE_EXAMEN: dictValues.FECHA,
+    });
+
     // Fallback: Si no se detectó doctor en el dictado, usar "Dr(a). Tratante" (nunca inventar un nombre)
     if (!dictValues.DOCTOR) {
         dictValues.DOCTOR = "Dr(a). Tratante";
@@ -3867,6 +3903,7 @@ async function construirDocumento(text, templateId, opciones = {}) {
         const doc = new docxtemplater(zip, {
             paragraphLoop: true,
             linebreaks: true,
+            nullGetter: () => "",   // un campo de la plantilla sin dato queda vacío, nunca "undefined"
         });
         
         // Negrita en rótulos del cuerpo (negrita.js): se marca el cuerpo y se procesa tras el render
