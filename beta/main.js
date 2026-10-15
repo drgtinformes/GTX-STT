@@ -3924,7 +3924,18 @@ if (generateWordBtn) {
         await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de generar Word
         const docData = await prepareDocument();
         if (docData) {
-            window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            // Carpeta del centro (carpetas.js) si la plantilla tiene una asignada; si no, descarga
+            let _archivo = null;
+            if (window.GTXCarpetas) {
+                const g = await window.GTXCarpetas.guardarNuevo(docData.blob, docData.fileNameBase, docData.templateId);
+                if (g.modo === 'carpeta') {
+                    _archivo = { templateId: docData.templateId, nombre: g.nombre };
+                    if (window.GTXToast) window.GTXToast(`Guardado en "${g.carpeta}": ${g.nombre}`, 'ok', 3500);
+                }
+            } else {
+                window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            }
+            docData.archivo = _archivo;
             // Paciente de un lote: el informe también queda guardado en el lote para el envío conjunto
             if (window.GTXLotes && window.GTXLotes.activo) {
                 const _act = window.GTXLotes.activo;

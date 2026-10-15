@@ -121,6 +121,9 @@
                 ts: Date.now(),
             });
             if (meta.threadId) rec.threadId = meta.threadId;
+            // Archivo guardado en la carpeta del centro (carpetas.js): la corrección lo sobrescribe
+            if (docData.archivo) rec.archivo = docData.archivo;
+            else if (meta.via === 'word') rec.archivo = null;
             if (meta.loteKey) { rec.loteKey = meta.loteKey; rec.pid = meta.pid; }
             // Texto distinto del que se revisó → vuelve a pendiente
             if (rec.estado === 'revisado' && rec.revisadoHash !== h) { rec.estado = 'pendiente'; rec.obs = []; rec.correcto = ''; }
@@ -166,7 +169,7 @@ CÓMO RECIBES LOS INFORMES
 - "Dr(a). Tratante" en el encabezado es el relleno de la app cuando no se dictó el derivante; señálalo solo si otro informe de la tanda trae el derivante con nombre para el mismo centro y fecha.
 - Hay dos grupos: INFORMES A REVISAR y INFORMES YA REVISADOS (solo contexto). A los de contexto NO les hagas observaciones: sirven para la consistencia entre informes de la tanda y entre informes del mismo paciente. Si un informe a revisar choca con uno de contexto, la observación va en el informe a revisar y lo dices en el mensaje.
 
-QUÉ ENTREGAS (con la herramienta entregar_revision; un elemento por cada informe A REVISAR, en el mismo orden)
+QUÉ ENTREGAS (JSON con el esquema indicado; un elemento en "informes" por cada informe A REVISAR, en el mismo orden)
 - tipo "correccion": SOLO cuando la corrección es local, inequívoca y no depende de la imagen ni de su juicio clínico (p. ej. "rízalisis" → "rizálisis"; concordancia de cámara/conducto/periápice cuando el número de raíces está escrito en la misma línea; un marcador de plantilla o "xxx" olvidado cuyo valor correcto está en el mismo informe). "cita" = fragmento copiado EXACTAMENTE del informe, carácter por carácter, lo bastante largo para que aparezca UNA sola vez (máx. 200 caracteres). "reemplazo" = el texto que sustituye a la cita, conservando todo lo demás igual.
 - tipo "pregunta": todo lo que requiere su juicio clínico o volver a la imagen. "mensaje" = la pregunta concreta. "cita" ubica el fragmento (cadena vacía si es una omisión sin fragmento). "reemplazo" = cadena vacía, o la redacción sugerida si él confirma (solo si es obvia).
 - "categoria": 2 a 4 palabras (p. ej. "concordancia radicular", "consulta no respondida", "lateralidad", "derivante", "entre informes", "cierre regional", "plantilla").
@@ -188,41 +191,41 @@ UMBRAL
             + (aud ? '\n\n=============== ORDEN DE CHEQUEO Y EXCEPCIONES DE AUDITORÍA ===============\n\n' + aud : '');
     }
 
-    const TOOL = {
-        name: 'entregar_revision',
-        description: 'Entrega la revisión de los informes A REVISAR de la tanda.',
-        input_schema: {
-            type: 'object',
-            properties: {
-                informes: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            id: { type: 'string', description: 'id del informe, tal como se entregó' },
-                            observaciones: {
-                                type: 'array',
-                                items: {
-                                    type: 'object',
-                                    properties: {
-                                        tipo: { type: 'string', enum: ['correccion', 'pregunta'] },
-                                        categoria: { type: 'string' },
-                                        cita: { type: 'string' },
-                                        reemplazo: { type: 'string' },
-                                        mensaje: { type: 'string' },
-                                    },
-                                    required: ['tipo', 'categoria', 'cita', 'reemplazo', 'mensaje'],
+    // Salida estructurada (output_config.format). Opus 5.5 no admite tool_choice forzado.
+    const SCHEMA = {
+        type: 'object',
+        properties: {
+            informes: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string', description: 'id del informe, tal como se entregó (R1, R2…)' },
+                        observaciones: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    tipo: { type: 'string', enum: ['correccion', 'pregunta'] },
+                                    categoria: { type: 'string' },
+                                    cita: { type: 'string' },
+                                    reemplazo: { type: 'string' },
+                                    mensaje: { type: 'string' },
                                 },
+                                required: ['tipo', 'categoria', 'cita', 'reemplazo', 'mensaje'],
+                                additionalProperties: false,
                             },
-                            correcto: { type: 'string' },
                         },
-                        required: ['id', 'observaciones', 'correcto'],
+                        correcto: { type: 'string' },
                     },
+                    required: ['id', 'observaciones', 'correcto'],
+                    additionalProperties: false,
                 },
-                resumen: { type: 'string' },
             },
-            required: ['informes', 'resumen'],
+            resumen: { type: 'string' },
         },
+        required: ['informes', 'resumen'],
+        additionalProperties: false,
     };
 
     function excepcionesTexto() {
@@ -260,7 +263,7 @@ UMBRAL
             user += `\n\nINFORMES YA REVISADOS — SOLO CONTEXTO, NO REVISAR (${contexto.length}):\n\n`
                 + contexto.map((r, i) => bloque(r, 'C' + (i + 1), 'CONTEXTO')).join('\n');
         }
-        user += '\n\nEntrega la revisión con la herramienta entregar_revision.';
+        user += '\n\nEntrega la revisión en el JSON indicado.';
 
         const resp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -274,8 +277,7 @@ UMBRAL
                 model: MODEL,
                 max_tokens: 16000,
                 system: [{ type: 'text', text: construirSystem(), cache_control: { type: 'ephemeral', ttl: '1h' } }],
-                tools: [TOOL],
-                tool_choice: { type: 'tool', name: TOOL.name },
+                output_config: { format: { type: 'json_schema', schema: SCHEMA } },
                 messages: [{ role: 'user', content: user }],
             }),
         });
@@ -286,12 +288,20 @@ UMBRAL
         }
         const data = await resp.json();
         const usd = registrarCosto(data.usage);
-        const tu = (data.content || []).find(b => b.type === 'tool_use' && b.name === TOOL.name);
-        if (!tu || !tu.input || !Array.isArray(tu.input.informes)) {
-            if (data.stop_reason === 'max_tokens') throw new Error('la respuesta quedó cortada (tanda demasiado larga); vuelve a intentar');
+        if (data.stop_reason === 'max_tokens') throw new Error('la respuesta quedó cortada (tanda demasiado larga); vuelve a intentar');
+        if (data.stop_reason === 'refusal') throw new Error('el modelo no entregó la revisión (rechazo); vuelve a intentar');
+        const texto = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+        let out = null;
+        try { out = JSON.parse(texto); }
+        catch (e) {
+            const i = texto.indexOf('{'), j = texto.lastIndexOf('}');
+            try { if (i >= 0 && j > i) out = JSON.parse(texto.slice(i, j + 1)); } catch (e2) { /* noop */ }
+        }
+        if (!out || !Array.isArray(out.informes)) {
+            console.warn('Tanda: respuesta no interpretable', data);
             throw new Error('la respuesta no trajo la revisión');
         }
-        return { informes: tu.input.informes, resumen: tu.input.resumen || '', usd };
+        return { informes: out.informes, resumen: out.resumen || '', usd };
     }
 
     /** Cuántas veces aparece `cita` en `texto` (exacto). */
@@ -305,7 +315,7 @@ UMBRAL
     function normalizarObs(o, texto) {
         const ob = {
             id: Math.random().toString(36).slice(2, 10),
-            tipo: o.tipo === 'correccion' ? 'correccion' : 'pregunta',
+            tipo: String(o.tipo || '').toLowerCase() === 'correccion' ? 'correccion' : 'pregunta',
             categoria: String(o.categoria || '').trim() || 'observación',
             cita: String(o.cita || '').trim(),
             reemplazo: String(o.reemplazo == null ? '' : o.reemplazo),
@@ -436,14 +446,21 @@ UMBRAL
     async function descargar(r) {
         const doc = await regenerar(r);
         if (!doc) return;
-        window.saveAs(doc.blob, (doc.fileNameBase || r.paciente) + '.docx');
+        const C = window.GTXCarpetas;
+        if (r.archivo && C && C.asignada(r.archivo.templateId)) {
+            const g = await C.sobrescribir(doc.blob, r.archivo.nombre, r.archivo.templateId);
+            if (g.modo === 'carpeta') toast(`Reemplazado en "${g.carpeta}": ${g.nombre}`, 'ok', 4000);
+            else toast('No se pudo escribir en la carpeta: el Word corregido se descargó.', 'warn', 6000);
+        } else {
+            window.saveAs(doc.blob, (doc.fileNameBase || r.paciente) + '.docx');
+        }
         return doc;
     }
 
     async function entregar(r) {
         try {
             if (r.via === 'gmail' && r.threadId) {
-                if (!confirm(`El informe de ${r.paciente} ya se envió por Gmail.\n\n¿Responder en el mismo hilo con el Word corregido?\n(Cancelar = solo descargarlo)`)) {
+                if (!confirm(`El informe de ${r.paciente} ya se envió por Gmail.\n\n¿Responder en el mismo hilo con el Word corregido?\n(Cancelar = solo guardarlo)`)) {
                     await descargar(r);
                 } else {
                     const doc = await regenerar(r);
@@ -631,7 +648,7 @@ UMBRAL
                 ${editando
                     ? `<button class="tanda-mini pri" data-t="guardar" data-r="${esc(r.id)}">Guardar cambios</button><button class="tanda-mini" data-t="cancelar" data-r="${esc(r.id)}">Cancelar</button>`
                     : `<button class="tanda-mini" data-t="editar" data-r="${esc(r.id)}">Editar informe</button>`}
-                ${r.pendienteEntrega ? `<button class="tanda-mini warn" data-t="entregar" data-r="${esc(r.id)}">${r.via === 'gmail' ? 'Reenviar / descargar corregido' : r.via === 'lote' ? 'Actualizar en el lote' : 'Descargar corregido'}</button>` : `<button class="tanda-mini" data-t="descargar" data-r="${esc(r.id)}">Descargar Word</button>`}
+                ${r.pendienteEntrega ? `<button class="tanda-mini warn" data-t="entregar" data-r="${esc(r.id)}">${r.via === 'gmail' ? 'Reenviar / guardar corregido' : r.via === 'lote' ? 'Actualizar en el lote' : (r.archivo ? 'Reemplazar en la carpeta' : 'Descargar corregido')}</button>` : `<button class="tanda-mini" data-t="descargar" data-r="${esc(r.id)}">${r.archivo ? 'Guardar Word' : 'Descargar Word'}</button>`}
                 <button class="tanda-mini" data-t="quitar" data-r="${esc(r.id)}" title="Sacar este informe de la tanda (no borra nada más)">Quitar</button>
             </div>
         </div>`;
