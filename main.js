@@ -1,3 +1,6 @@
+// Migración (oct-2026): Claude Haiku 4.5 fue reemplazado por Haiku 5.5 (más capaz y ~10× más barato)
+try { if (localStorage.getItem('formatter_model') === 'claude-haiku-4-5') localStorage.setItem('formatter_model', 'claude-haiku-5-5'); } catch (e) { /* noop */ }
+
 // Diccionario por defecto (Expandido V2)
 const defaultCorrectionsDict = {
     // === ANATOMÍA GENERAL ===
@@ -149,6 +152,41 @@ const defaultCorrectionsDict = {
 
 let correctionsDict = { ...defaultCorrectionsDict };
 
+// === Guardado del diccionario con VERSIONES (beta oct-2026) ===
+// Cada vez que el diccionario cambia, la versión anterior se guarda (últimas 20) para
+// poder volver atrás desde el modal del Diccionario si algo se "envenena".
+function guardarDiccionario(motivo) {
+    try {
+        // Sin diccionario guardado aún, la versión "anterior" es el diccionario por defecto
+        const prev = localStorage.getItem('custom_dict') || JSON.stringify(defaultCorrectionsDict);
+        const next = JSON.stringify(correctionsDict);
+        if (prev !== next) {
+            let vers = [];
+            try { vers = JSON.parse(localStorage.getItem('custom_dict_versions') || '[]') || []; } catch (e) { vers = []; }
+            let n = 0;
+            try { n = Object.keys(JSON.parse(prev)).length; } catch (e) {}
+            vers.unshift({ ts: Date.now(), motivo: motivo || 'cambio', n, dict: prev });
+            localStorage.setItem('custom_dict_versions', JSON.stringify(vers.slice(0, 20)));
+        }
+        localStorage.setItem('custom_dict', next);
+    } catch (e) {
+        console.error('No se pudo guardar el diccionario', e);
+    }
+}
+
+/** Modelo Gemini rápido y vigente (según la lista que devuelve la API), para tareas cortas. */
+function modeloGeminiRapido() {
+    try {
+        const c = JSON.parse(localStorage.getItem('gemini_models_cache') || 'null');
+        const names = ((c && c.data && c.data.models) || []).map(m => String(m.name || '').replace(/^models\//, ''));
+        for (const pref of ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-2.5-flash', 'gemini-flash-latest']) {
+            const hit = names.find(n => n === pref) || names.find(n => n.startsWith(pref + '-') && !/preview|exp|lite|image|tts|audio|live/.test(n));
+            if (hit) return hit;
+        }
+    } catch (e) { /* noop */ }
+    return 'gemini-flash-latest';
+}
+
 // Cargar y FUSIONAR diccionario desde localStorage si existe
 const savedDict = localStorage.getItem('custom_dict');
 if (savedDict) {
@@ -180,7 +218,7 @@ const ENTRADAS_DICCIONARIO_RETIRADAS = {
         if (correctionsDict[k] === v) { delete correctionsDict[k]; cambiado = true; }
     }
     if (cambiado && savedDict) {
-        try { localStorage.setItem('custom_dict', JSON.stringify(correctionsDict)); } catch (e) {}
+        guardarDiccionario('saneamiento automático');
     }
 })();
 
@@ -250,6 +288,22 @@ if (savedMeta) {
     }
 }
 
+
+// Prompt de sistema del formateador (antes estaba duplicado para Claude y para Gemini)
+function construirPromptSistema(textToProcess) {
+    let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
+    
+    basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
+
+    // Inyectar la fecha real del sistema para que el modelo NO la invente
+    const _hoy = new Date();
+    const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
+    basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
+    basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
+
+    return basePrompt;
+}
 
 // === GESTOR DE PLANTILLAS ===
 class TemplateManager {
@@ -1336,6 +1390,95 @@ function stopDeepgramRecording(immediate = false) {
 }
 
 // =========================================================================
+// === EDICIÓN MANUAL DURANTE EL DICTADO EN VIVO (Soniox / Speechmatics) ===
+// =========================================================================
+// Estos motores reescriben el cuadro completo en cada mensaje (base + finales + provisional),
+// así que una corrección hecha a mano mientras se grababa se perdía en el mensaje siguiente.
+// Ahora, si el cuadro cambió desde la última vez que lo pintó el motor, la versión editada
+// pasa a ser la nueva base y el dictado continúa a continuación, sin detener la grabación.
+const vivo = { base: '', sysBase: '', pintado: null, cola: '', comprometido: '', saltar: 0, sysAsignado: null };
+
+const _vivoSep = (s) => (s.length > 0 && !s.endsWith(' ') && !s.endsWith('\n')) ? ' ' : '';
+const _vivoUnir = (a, b) => b ? a + _vivoSep(a) + b : a;
+const _vivoContar = (s) => (String(s || '').match(/\S+/g) || []).length;
+function _vivoQuitarPalabras(s, n) {
+    if (n <= 0) return s;
+    const re = /\S+/g;
+    let m, k = 0, fin = 0;
+    while (k < n && (m = re.exec(s))) { fin = m.index + m[0].length; k++; }
+    return k < n ? '' : s.slice(fin);
+}
+
+function vivoIniciar(base) {
+    vivo.base = base; vivo.sysBase = base; vivo.pintado = null; vivo.cola = '';
+    vivo.comprometido = ''; vivo.saltar = 0; vivo.sysAsignado = null;
+}
+
+// Llamar al recibir cada mensaje, ANTES de sumar los tokens nuevos.
+// Devuelve true si el usuario editó el cuadro: el llamador debe reiniciar su acumulado final.
+function vivoAbsorberEdicion() {
+    if (vivo.pintado === null || transcriptionArea.value === vivo.pintado) return false;
+    let v = transcriptionArea.value;
+    // Si el aprendizaje automático ya sincronizó lastSystemText, las ediciones anteriores
+    // ya se aprendieron: la base del sistema pasa a ser la del usuario.
+    const aprendido = vivo.sysAsignado !== null && lastSystemText !== vivo.sysAsignado;
+    if (aprendido) vivo.sysBase = vivo.base;
+    vivo.sysBase = _vivoUnir(vivo.sysBase, vivo.comprometido);
+    if (vivo.cola && v.endsWith(vivo.cola)) {
+        // Editó solo texto ya confirmado: la parte provisional se quita y volverá como final.
+        v = v.slice(0, v.length - vivo.cola.length);
+        vivo.saltar = 0;
+    } else if (vivo.cola) {
+        // Corrigió la parte provisional (o escribió después de ella): se respeta su versión
+        // y se descartan las próximas palabras finales equivalentes para no duplicarlas.
+        vivo.saltar = _vivoContar(vivo.cola);
+        vivo.sysBase = _vivoUnir(vivo.sysBase, vivo.cola.trim());
+    } else {
+        vivo.saltar = 0;
+    }
+    vivo.base = v;
+    if (aprendido && lastSystemText === transcriptionArea.value.trim()) vivo.sysBase = v;
+    vivo.comprometido = '';
+    vivo.cola = '';
+    return true;
+}
+
+// Pinta base + finales + provisional sin mover el cursor si el usuario está editando más arriba.
+// Devuelve el acumulado final (posiblemente recortado) para que el llamador lo guarde.
+function vivoPintar(acumFinal, interimTxt) {
+    let acum = acumFinal || '', interim = interimTxt || '', mostrarFinal = true;
+    if (vivo.saltar) {
+        const n = _vivoContar(acum);
+        if (n >= vivo.saltar) { acum = _vivoQuitarPalabras(acum, vivo.saltar); vivo.saltar = 0; }
+        else { interim = _vivoQuitarPalabras(interim, vivo.saltar - n); mostrarFinal = false; }
+    }
+    const committed = mostrarFinal ? applyCorrections(acum.trim()) : '';
+    finalTranscript = _vivoUnir(vivo.base, committed);
+    const it = interim.trim();
+    const cola = it ? _vivoSep(finalTranscript) + it : '';
+    const nuevo = finalTranscript + cola;
+
+    const ta = transcriptionArea;
+    if (ta.value !== nuevo) {
+        const foco = document.activeElement === ta;
+        const s = ta.selectionStart, e = ta.selectionEnd, top = ta.scrollTop;
+        const editandoArriba = foco && e < ta.value.length - vivo.cola.length;
+        ta.value = nuevo;
+        if (editandoArriba) { ta.setSelectionRange(s, e); ta.scrollTop = top; }
+        else ta.scrollTop = ta.scrollHeight;
+    }
+    vivo.pintado = nuevo;
+    vivo.cola = cola;
+    vivo.comprometido = committed;
+
+    lastDictatedText = finalTranscript;
+    lastSystemText = _vivoUnir(vivo.sysBase, committed);
+    vivo.sysAsignado = lastSystemText;
+    localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
+    return acum;
+}
+
+// =========================================================================
 // === MOTOR SONIOX (Español / Multilingüe, streaming en tiempo real) ======
 // =========================================================================
 // Soniox autentica con la key en el PRIMER mensaje JSON (no por header/subprotocolo).
@@ -1349,6 +1492,12 @@ let sonioxBaseTranscript = '';
 let sonioxSessionFinal = '';
 
 // Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
+// Quita las marcas de control de Soniox (<end>, <fin>) que no son texto dictado.
+function limpiarMarcasSoniox(txt) {
+    if (!txt || txt.indexOf('<') === -1) return txt;
+    return txt.replace(/\s*<\/?\s*(end|fin)\s*>/gi, '').replace(/ {2,}/g, ' ');
+}
+
 async function getSonioxToken() {
     const proxyUrl = getProxyUrl('soniox_proxy_url');
     if (proxyUrl) {
@@ -1392,6 +1541,7 @@ async function startSonioxRecording() {
             // Lo ya escrito se conserva; Soniox añade a partir de aquí.
             sonioxBaseTranscript = transcriptionArea.value || finalTranscript || '';
             sonioxSessionFinal = '';
+            vivoIniciar(sonioxBaseTranscript);
 
             // Configuración: DEBE ser el primer mensaje y de tipo texto.
             sonioxWs.send(JSON.stringify({
@@ -1431,27 +1581,25 @@ async function startSonioxRecording() {
                 return;
             }
 
+            // Si corregiste a mano mientras grababa, tu versión pasa a ser la base.
+            if (vivoAbsorberEdicion()) sonioxSessionFinal = '';
+
             const tokens = data.tokens || [];
             let interim = '';
             for (const tk of tokens) {
                 if (!tk.text) continue;
+                // Soniox envía marcas especiales: <end> (fin de frase, por enable_endpoint_detection)
+                // y <fin> (fin de finalización manual). No son texto dictado.
+                if (tk.text === '<end>' || tk.text === '<fin>') continue;
                 if (tk.is_final) sonioxSessionFinal += tk.text;   // token confirmado
                 else interim += tk.text;                          // hipótesis provisional
             }
+            // Por si la marca llega pegada a otro texto o partida en varios tokens
+            sonioxSessionFinal = limpiarMarcasSoniox(sonioxSessionFinal);
+            interim = limpiarMarcasSoniox(interim);
 
-            // Comprometido = texto previo (base) + corrección del acumulado final de Soniox.
-            const committed = applyCorrections(sonioxSessionFinal.trim());
-            const base = sonioxBaseTranscript;
-            const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
-            finalTranscript = base + (committed ? sep + committed : '');
-
-            // Vista previa: comprometido + interino (sin corregir aún).
-            const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
-            transcriptionArea.value = finalTranscript + (interim.trim() ? sepI + interim.trim() : '');
-            lastDictatedText = finalTranscript;
-            lastSystemText = finalTranscript;
-            localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
-            transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+            // Comprometido = base (con tus ediciones) + acumulado final corregido; luego el interino.
+            sonioxSessionFinal = vivoPintar(sonioxSessionFinal, interim);
         };
 
         sonioxWs.onerror = (err) => {
@@ -1563,6 +1711,7 @@ async function startSpeechmaticsRecording(useVocab = true) {
 
             smBaseTranscript = transcriptionArea.value || finalTranscript || '';
             smSessionFinal = '';
+            vivoIniciar(smBaseTranscript);
             smSeqNo = 0;
             smStarted = false;
             smPendingAudio = [];
@@ -1611,21 +1760,13 @@ async function startSpeechmaticsRecording(useVocab = true) {
 
                 case 'AddPartialTranscript':
                 case 'AddTranscript': {
+                    // Si corregiste a mano mientras grababa, tu versión pasa a ser la base.
+                    if (vivoAbsorberEdicion()) smSessionFinal = '';
                     const text = (data.metadata && data.metadata.transcript) || '';
                     if (data.message === 'AddTranscript') smSessionFinal += text;
 
-                    const committed = applyCorrections(smSessionFinal.trim());
-                    const base = smBaseTranscript;
-                    const sep = (base.length > 0 && !base.endsWith(' ') && !base.endsWith('\n')) ? ' ' : '';
-                    finalTranscript = base + (committed ? sep + committed : '');
-
                     const interim = data.message === 'AddPartialTranscript' ? text.trim() : '';
-                    const sepI = (finalTranscript.length > 0 && !finalTranscript.endsWith(' ') && !finalTranscript.endsWith('\n')) ? ' ' : '';
-                    transcriptionArea.value = finalTranscript + (interim ? sepI + interim : '');
-                    lastDictatedText = finalTranscript;
-                    lastSystemText = finalTranscript;
-                    localStorage.setItem(AUTOSAVE_KEY, finalTranscript);
-                    transcriptionArea.scrollTop = transcriptionArea.scrollHeight;
+                    smSessionFinal = vivoPintar(smSessionFinal, interim);
                     return;
                 }
 
@@ -1880,6 +2021,62 @@ clearBtn.addEventListener('click', () => {
     }
 });
 
+// === Limpieza automática tras guardar en Word o enviar por Gmail ===
+// El informe final queda en el historial (reemplaza la versión formateada del mismo
+// paciente si es reciente) y se ofrece "Deshacer" por unos segundos, por si después
+// de guardar el Word también quieres enviarlo por Gmail.
+function limpiarTrasExportar(origen) {
+    const texto = transcriptionArea.value;
+    if (!texto.trim() || isRecording) return;
+
+    try {
+        const primera = (texto.split('\n').find(l => l.trim()) || '').trim();
+        const ultimo = dictationHistory[0];
+        const reciente = ultimo && (Date.now() - Number(ultimo.id)) < 3 * 60 * 60 * 1000;
+        if (reciente && ultimo.patientName === primera) {
+            if (ultimo.text !== texto) {
+                ultimo.text = texto;
+                localStorage.setItem('dictationHistory', JSON.stringify(dictationHistory));
+            }
+        } else {
+            saveToHistory(texto);
+        }
+    } catch (e) { console.warn('Historial:', e); }
+
+    transcriptionArea.value = '';
+    finalTranscript = '';
+    lastSystemText = '';
+    lastDictatedText = '';
+    localStorage.removeItem(AUTOSAVE_KEY);
+    if (typeof ocultarPanelCambios === 'function') ocultarPanelCambios();
+
+    let box = document.getElementById('gtx-toasts');
+    if (!box) { box = document.createElement('div'); box.id = 'gtx-toasts'; document.body.appendChild(box); }
+    const t = document.createElement('div');
+    t.className = 'gtx-toast ok';
+    t.style.cssText = 'display:flex;align-items:center;gap:12px';
+    t.innerHTML = `<span>${origen}: cuadro de texto limpio.</span>`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Deshacer';
+    btn.style.cssText = 'margin-left:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:inherit;font:inherit;cursor:pointer';
+    const cerrar = () => { t.classList.add('out'); setTimeout(() => t.remove(), 300); };
+    btn.addEventListener('click', () => {
+        if (transcriptionArea.value.trim()) {
+            if (!confirm('El cuadro ya tiene texto nuevo. ¿Reemplazarlo por el informe anterior?')) return;
+        }
+        transcriptionArea.value = texto;
+        finalTranscript = texto;
+        lastSystemText = texto;
+        localStorage.setItem(AUTOSAVE_KEY, texto);
+        transcriptionArea.focus();
+        cerrar();
+    });
+    t.appendChild(btn);
+    box.appendChild(t);
+    setTimeout(cerrar, 15000);
+}
+
 // === Lógica de Configuración y Modal ===
 const openaiKeyInput = document.getElementById('openai-key-input');
 const anthropicKeyInput = document.getElementById('anthropic-key-input');
@@ -1923,7 +2120,7 @@ if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = sa
 function actualizarBotonIA() {
     if (!aiProcessBtn) return;
     const fm = localStorage.getItem('formatter_model') || 'auto';
-    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-4-5': 'Claude Haiku 4.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek Flash' };
+    const NOMBRES_MODELO = { 'claude-opus-4-8': 'Claude Opus 4.8', 'claude-sonnet-5': 'Claude Sonnet 5', 'claude-sonnet-4-6': 'Claude Sonnet 4.6', 'claude-haiku-5-5': 'Claude Haiku 5.5', 'gpt-4o-mini': 'GPT-4o mini', 'glm-5.2': 'GLM-5.2', 'deepseek-v4-flash': 'DeepSeek Flash' };
     const nombre = NOMBRES_MODELO[fm] || (fm.startsWith('claude') ? 'Claude' : 'Gemini');
     aiProcessBtn.innerHTML = `<span class="icon"><i data-lucide="sparkles"></i></span> Procesar con IA (${nombre})`;
     if (window.lucide && lucide.createIcons) lucide.createIcons();
@@ -2016,7 +2213,7 @@ function renderDict() {
             const wordToRemove = e.currentTarget.getAttribute('data-word');
             delete correctionsDict[wordToRemove];
             delete correctionsMeta[wordToRemove];
-            localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+            guardarDiccionario('eliminado: ' + wordToRemove);
             localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
             renderDict();
         });
@@ -2043,7 +2240,7 @@ addDictBtn.addEventListener('click', () => {
 
     correctionsDict[wrong] = right;
     delete correctionsMeta[wrong]; // Quitar marca automática si el usuario lo define a mano
-    localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+    guardarDiccionario('agregado: ' + wrong);
     localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
     
     dictWrongInput.value = '';
@@ -2075,7 +2272,7 @@ importFile.addEventListener('change', (e) => {
         try {
             const importedDict = JSON.parse(event.target.result);
             correctionsDict = { ...correctionsDict, ...importedDict };
-            localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
+            guardarDiccionario('importación de archivo');
             renderDict();
             alert("Diccionario importado y fusionado correctamente.");
         } catch (error) {
@@ -2305,20 +2502,7 @@ aiProcessBtn.addEventListener('click', async () => {
         aiProcessBtn.disabled = true;
 
         try {
-            function buildDynamicSystemPrompt() {
-                let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-                
-                basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
-
-                // Inyectar la fecha real del sistema para que el modelo NO la invente
-                const _hoy = new Date();
-                const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-                const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
-                basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-                basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
-
-                return basePrompt;
-            }
+            function buildDynamicSystemPrompt() { return construirPromptSistema(textToProcess); }
 
             // Prompt caching: el prompt estable (SYSTEM_PROMPT) va en un bloque cacheable
             // (se paga ~10% al reusarlo); la parte dinámica (correcciones + fecha) va aparte
@@ -2674,9 +2858,7 @@ aiProcessBtn.addEventListener('click', async () => {
                     'gemini-flash-latest',
                     'gemini-2.5-flash',
                     'gemini-2.0-flash',
-                    'gemini-2.5-flash-lite',
-                    'gemini-1.5-flash-latest',
-                    'gemini-1.5-flash'
+                    'gemini-2.5-flash-lite'
                 ];
                 defaultPriority.forEach(pName => {
                     if (!priorityOrder.includes(pName)) {
@@ -2708,20 +2890,7 @@ aiProcessBtn.addEventListener('click', async () => {
         }
 
         // Función para armar el prompt de sistema dinámico incluyendo las correcciones
-        function buildDynamicSystemPrompt() {
-            let basePrompt = typeof SYSTEM_PROMPT !== 'undefined' ? SYSTEM_PROMPT : 'Eres un formateador estricto.';
-            
-            basePrompt += construirReglasDiccionario(); // vocabulario del usuario (filtrado: sin cambios de singular/plural ni "variaciones fonéticas") + términos protegidos
-
-            // Inyectar la fecha real del sistema para que el modelo NO la invente
-            const _hoy = new Date();
-            const _meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-            const _fechaHoy = `${_hoy.getDate()} de ${_meses[_hoy.getMonth()]} del ${_hoy.getFullYear()}`;
-            basePrompt += `\n\n### DATO DEL SISTEMA — FECHA ACTUAL (PRIORIDAD MÁXIMA):\nLa fecha de hoy es: ${_fechaHoy}.\nREGLA DE FECHA: Si el dictado NO menciona ninguna fecha, escribe EXACTAMENTE "${_fechaHoy}" en la línea de fecha del encabezado. Está ESTRICTAMENTE PROHIBIDO inventar otra fecha o copiar las fechas de los ejemplos del prompt (como "18 de marzo del 2026"). Si el dictado SÍ menciona una fecha, usa la dictada.`;
-            basePrompt += instruccionNomenclatura(textToProcess) + INSTRUCCION_CAMBIOS; // Bloqueo de nomenclatura dictada + registro de cambios (se extrae y muestra en el recuadro)
-
-            return basePrompt;
-        }
+        function buildDynamicSystemPrompt() { return construirPromptSistema(textToProcess); }
 
         const payload = {
             systemInstruction: {
@@ -2775,9 +2944,9 @@ aiProcessBtn.addEventListener('click', async () => {
             // FALLBACK: si se agotó la cuota gratis de Gemini y hay clave de Anthropic,
             // procesamos este informe con Claude Haiku sin interrumpir al usuario.
             if (_esCuota && localStorage.getItem('anthropic_api_key')) {
-                console.info('[fallback] Cuota de Gemini agotada -> procesando con Claude Haiku 4.5.');
+                console.info('[fallback] Cuota de Gemini agotada -> procesando con Claude Haiku 5.5.');
                 aiProcessBtn.innerHTML = '<span class="pulse" style="display:inline-block; margin-right:8px;"></span> Cuota Gemini agotada -> Haiku...';
-                const _ok = await procesarConClaudeFallback(textToProcess, 'claude-haiku-4-5');
+                const _ok = await procesarConClaudeFallback(textToProcess, 'claude-haiku-5-5');
                 if (_ok) return; // listo vía fallback (el finally restaura el botón)
                 throw new Error('Se agotó la cuota de Gemini y el fallback a Haiku no devolvió contenido. Revisa tu clave de Anthropic.');
             }
@@ -2952,6 +3121,7 @@ function ocultarPanelCambios() {
 }
 
 function mostrarPanelCambios(cambios, dictado, informe) {
+    if (window.GTXRevisorIA) window.GTXRevisorIA.prefetch(dictado);
     const panel = document.getElementById('ai-changes-panel');
     const lista = document.getElementById('ai-changes-list');
     const titulo = document.getElementById('ai-changes-title');
@@ -3427,8 +3597,26 @@ function _formatearEdad(nac, ref) {
     return `${anos} ${anos === 1 ? 'año' : 'años'}, ${mm}`;
 }
 
+// ¿La plantilla tiene un campo de fecha de nacimiento? (entonces la fecha dictada se conserva y NO se pasa a edad)
+const _cachePlantillaNac = new Map();
+function plantillaPideFechaNacimiento(templateId) {
+    try {
+        const t = templateId && templateManager.getTemplate(templateId);
+        if (!t || !t.base64) return false;
+        const k = templateId + ':' + t.base64.length;
+        if (!_cachePlantillaNac.has(k)) {
+            const zip = new PizZip(base64ToArrayBuffer(t.base64));
+            const txt = Object.keys(zip.files).filter(n => /^word\/(document|header\d*|footer\d*)\.xml$/.test(n))
+                .map(n => zip.file(n).asText().replace(/<[^>]+>/g, '')).join(' ');
+            _cachePlantillaNac.set(k, /\{\s*FECHA[ _](DE[ _])?NACIMIENTO\s*\}/i.test(txt));
+        }
+        return _cachePlantillaNac.get(k);
+    } catch (e) { return false; }
+}
+
 function convertirFechaNacimientoAEdad(texto) {
     if (!texto || !_RE_NACIMIENTO.test(texto)) return texto;
+    if (typeof templateSelect !== 'undefined' && templateSelect && plantillaPideFechaNacimiento(templateSelect.value)) return texto;
     const lineas = texto.split('\n');
     // Encabezado = líneas antes de ANT. CLÍNICOS / QUE DESEA SABER / TIPO DE ESTUDIO
     let fin = lineas.findIndex(l => /^\s*(ANT\.\s*CL[IÍ]NICOS|QUE DESEA SABER|TIPO DE ESTUDIO)/i.test(l));
@@ -3579,11 +3767,28 @@ async function prepareDocument() {
         localStorage.setItem(AUTOSAVE_KEY, text);
     }
 
-    const templateId = templateSelect.value;
+    // Revisor clínico: alertas antes de generar (no cambia el texto; el usuario decide)
+    if (window.GTXRevisor) {
+        const seguir = await window.GTXRevisor.revisar(text);
+        if (!seguir) return null;
+        text = transcriptionArea.value.trim();   // pudo cambiar con "Aplicar" del revisor
+        finalTranscript = text;
+    }
+
+    return construirDocumento(text, templateSelect.value);
+}
+
+/**
+ * Genera el Word a partir de un texto y una plantilla, sin leer ni tocar el editor.
+ * Lo usa prepareDocument y también la revisión de tanda (tanda.js) para regenerar un
+ * informe corregido. Con { silencioso: true } no muestra alert: lanza el error.
+ */
+async function construirDocumento(text, templateId, opciones = {}) {
+    const avisar = (msg) => { if (opciones.silencioso) throw new Error(msg); alert(msg); };
     const templateData = templateManager.getTemplate(templateId);
-    
+
     if (!templateData) {
-        alert("Selecciona una plantilla válida.");
+        avisar("Selecciona una plantilla válida.");
         return null;
     }
 
@@ -3615,8 +3820,19 @@ async function prepareDocument() {
         let rawName = headerLines[0].toLowerCase();
         dictValues.PACIENTE = rawName.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
         
+        // Fecha de nacimiento (plantillas con el campo {FECHA DE NACIMIENTO}, p. ej. Lo Fontecilla):
+        // la línea "Fecha de nacimiento: DD/MM/AAAA" va a su campo y no se confunde con la fecha del informe
+        const _sinNacimiento = [];
+        headerLines.slice(1).forEach(line => {
+            if (_RE_NACIMIENTO.test(line) && !dictValues.FECHA_NACIMIENTO) {
+                const resto = line.slice(line.search(_RE_NACIMIENTO)).replace(_RE_NACIMIENTO, '').trim();
+                const f = _parseFechaES(resto);
+                dictValues.FECHA_NACIMIENTO = f ? `${String(f.d).padStart(2, '0')}/${String(f.m).padStart(2, '0')}/${f.y}` : resto;
+            } else _sinNacimiento.push(line);
+        });
+
         // Procesar las líneas restantes buscando patrones (Edad, Doctor, Fecha)
-        const remainingLines = headerLines.slice(1);
+        const remainingLines = _sinNacimiento;
         remainingLines.forEach((line, index) => {
             const l = line.toLowerCase();
             // Detectar Fecha: busca meses o formato de fecha
@@ -3652,6 +3868,13 @@ async function prepareDocument() {
         dictValues.FECHA = `${now.getDate()} de ${months[now.getMonth()]} del ${now.getFullYear()}`;
     }
 
+    // Alias de campos que usan algunas plantillas (Lo Fontecilla / Schilling): "Fecha de Examen" = fecha del informe
+    const _fnac = dictValues.FECHA_NACIMIENTO || "";
+    Object.assign(dictValues, {
+        'FECHA DE NACIMIENTO': _fnac, 'FECHA NACIMIENTO': _fnac, FECHA_NACIMIENTO: _fnac, FECHA_DE_NACIMIENTO: _fnac,
+        'FECHA DE EXAMEN': dictValues.FECHA, 'FECHA EXAMEN': dictValues.FECHA, FECHA_EXAMEN: dictValues.FECHA, FECHA_DE_EXAMEN: dictValues.FECHA,
+    });
+
     // Fallback: Si no se detectó doctor en el dictado, usar "Dr(a). Tratante" (nunca inventar un nombre)
     if (!dictValues.DOCTOR) {
         dictValues.DOCTOR = "Dr(a). Tratante";
@@ -3680,10 +3903,24 @@ async function prepareDocument() {
         const doc = new docxtemplater(zip, {
             paragraphLoop: true,
             linebreaks: true,
+            nullGetter: () => "",   // un campo de la plantilla sin dato queda vacío, nunca "undefined"
         });
         
+        // Negrita en rótulos del cuerpo (negrita.js): se marca el cuerpo y se procesa tras el render
+        const _neg = window.GTXNegrita;
+        const _cuerpo = dictValues.INFORME;
+        if (_neg && _neg.activa()) {
+            dictValues.DIAGNOSTICO = _neg.marcar(dictValues.DIAGNOSTICO);
+            dictValues.INFORME = _neg.marcar(dictValues.INFORME);
+        }
+
         doc.render(dictValues);
-        
+
+        if (_neg) {
+            try { _neg.aplicarZip(doc.getZip(), _cuerpo); }
+            catch (e) { console.warn('Negrita en rótulos no aplicada:', e); }
+        }
+
         const out = doc.getZip().generate({
             type: "blob",
             mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -3701,14 +3938,19 @@ async function prepareDocument() {
             fileNameBase = `${year}_${month}_${day}_${dictValues.PACIENTE.toUpperCase()}`;
         }
         
-        return { blob: out, fileNameBase: fileNameBase, patientName: dictValues.PACIENTE };
-        
+        return {
+            blob: out, fileNameBase: fileNameBase, patientName: dictValues.PACIENTE,
+            texto: text, templateId: templateId, templateName: templateData.name, estudio: dictValues.ESTUDIO,
+        };
+
     } catch (error) {
         console.error("Error al preparar documento", error);
+        if (opciones.silencioso) throw error;
         alert("Hubo un error técnico al procesar la plantilla:\n" + error.message);
         return null;
     }
 }
+window.GTXConstruirDocumento = construirDocumento;
 
 // Inicializar UI
 updateTemplateUI();
@@ -3719,7 +3961,30 @@ if (generateWordBtn) {
         await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de generar Word
         const docData = await prepareDocument();
         if (docData) {
-            window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            // Carpeta del centro (carpetas.js) si la plantilla tiene una asignada; si no, descarga
+            let _archivo = null;
+            if (window.GTXCarpetas) {
+                const g = await window.GTXCarpetas.guardarNuevo(docData.blob, docData.fileNameBase, docData.templateId);
+                if (g.modo === 'carpeta') {
+                    _archivo = { templateId: docData.templateId, nombre: g.nombre };
+                    if (window.GTXToast) window.GTXToast(`Guardado en "${g.carpeta}": ${g.nombre}`, 'ok', 3500);
+                }
+            } else {
+                window.saveAs(docData.blob, docData.fileNameBase + ".docx");
+            }
+            docData.archivo = _archivo;
+            // Paciente de un lote: el informe también queda guardado en el lote para el envío conjunto
+            if (window.GTXLotes && window.GTXLotes.activo) {
+                const _act = window.GTXLotes.activo;
+                const ok = await window.GTXLotes.guardarInforme(docData);
+                if (window.GTXTanda) window.GTXTanda.registrar(docData, ok ? { via: 'lote', loteKey: _act.key, pid: _act.pid } : { via: 'word' });
+                if (!ok) return;
+                limpiarTrasExportar('Word guardado y agregado al lote');
+                return;
+            }
+            if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'word' });
+            limpiarTrasExportar('Word guardado');
+            return;
         }
         lastDictatedText = transcriptionArea.value.trim();
     });
@@ -3770,6 +4035,7 @@ if (generatePdfBtn) generatePdfBtn.addEventListener('click', async () => {
 
         // Generar y guardar PDF
         await html2pdf().set(opt).from(container).save();
+        if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'pdf' });
 
         // Restaurar botón
         generatePdfBtn.innerHTML = originalText;
@@ -4236,6 +4502,18 @@ const sendGmailBtn = document.getElementById('send-gmail-btn');
 if (sendGmailBtn) {
     sendGmailBtn.addEventListener('click', async () => {
         await triggerCorrectionCheck(); // Aprender correcciones acumuladas antes de enviar Gmail
+        // Paciente de un lote: no se responde el correo; el informe se guarda en el lote
+        // y al final se envían todos juntos en un correo nuevo (desde la lista del lote).
+        if (window.GTXLotes && window.GTXLotes.activo) {
+            const docData = await prepareDocument();
+            if (!docData) return;
+            const _act = window.GTXLotes.activo;
+            if (await window.GTXLotes.guardarInforme(docData)) {
+                if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'lote', loteKey: _act.key, pid: _act.pid });
+                limpiarTrasExportar('Informe agregado al lote');
+            }
+            return;
+        }
         const originalText = sendGmailBtn.innerHTML;
         try {
             // 1. Preparar el documento (obtenemos el blob)
@@ -4256,8 +4534,11 @@ if (sendGmailBtn) {
             // Extraeremos el nombre del área de transcripción o de lo que prepareDocument procesó.
             // Una mejor forma es que prepareDocument devuelva también el nombre procesado.
             
-            // Buscamos el hilo del paciente usando su nombre completo
-            const thread = await findPatientThread(docData.patientName); 
+            // Si hay una orden abierta desde la bandeja, se responde a ESE hilo.
+            // Si no, se busca el hilo del paciente por su nombre.
+            let thread = null;
+            if (window.GTXOrders && window.GTXOrders.active) thread = await window.GTXOrders.getActiveThread();
+            if (!thread) thread = await findPatientThread(docData.patientName);
 
             if (!thread) {
                 const info = (typeof lastGmailSearchInfo !== 'undefined') ? lastGmailSearchInfo : {};
@@ -4291,8 +4572,11 @@ if (sendGmailBtn) {
 
             // 5. Enviar respuesta
             await sendReplyWithAttachment(thread, docData.blob, docData.fileNameBase + ".docx");
+            if (window.GTXOrders) window.GTXOrders.onSent(thread, templateSelect.value);
+            if (window.GTXTanda) window.GTXTanda.registrar(docData, { via: 'gmail', threadId: thread.id });
 
             alert("¡Informe enviado con éxito por Gmail!");
+            limpiarTrasExportar('Enviado por Gmail');
             sendGmailBtn.innerHTML = '<i data-lucide="check"></i> Enviado';
             setTimeout(() => {
                 sendGmailBtn.innerHTML = originalText;
@@ -5671,14 +5955,12 @@ if (visionAnalyzeBtn) {
                 }
 
                 const priorityOrder = [
+                    'gemini-3.5-flash',
+                    'gemini-3-flash',
+                    'gemini-flash-latest',
                     'gemini-2.5-flash',
-                    'gemini-2.0-flash',
-                    'gemini-2.0-flash-exp',
-                    'gemini-1.5-pro',
-                    'gemini-1.5-pro-latest',
-                    'gemini-1.5-flash',
-                    'gemini-1.5-flash-latest',
-                    'gemini-1.5-flash-8b'
+                    'gemini-2.5-pro',
+                    'gemini-2.0-flash'
                 ];
 
                 priorityOrder.forEach(pName => {
@@ -5865,7 +6147,13 @@ function updateSyncIndicator(state) {
     const iconSpan = indicator.querySelector('.indicator-icon');
     const textSpan = indicator.querySelector('.indicator-text');
 
-    if (state === 'idle') {
+    const nPend = (state === 'idle' && window.GTXDictReview) ? window.GTXDictReview.count() : 0;
+    if (state === 'idle' && nPend > 0) {
+        indicator.className = 'ai-sync-indicator pending';
+        iconSpan.innerHTML = '<i data-lucide="list-checks"></i>';
+        textSpan.textContent = `${nPend} corrección${nPend === 1 ? '' : 'es'} por revisar`;
+        indicator.title = 'Clic para revisar las correcciones aprendidas';
+    } else if (state === 'idle') {
         iconSpan.innerHTML = '<i data-lucide="sparkles"></i>';
         textSpan.textContent = 'Inteligencia al día';
     } else if (state === 'learning') {
@@ -5954,7 +6242,7 @@ Editado: "${edited}"`;
             generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
         };
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modeloGeminiRapido()}:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -5965,30 +6253,27 @@ Editado: "${edited}"`;
             const resultText = data.candidates[0].content.parts[0].text;
             const newCorrections = JSON.parse(resultText);
             
+            // Ya NO se agregan directo al diccionario: quedan como PROPUESTAS que el usuario
+            // aprueba o rechaza en el modal del Diccionario (evita aprender "basura").
             let addedCount = 0;
-            for (const [wrong, right] of Object.entries(newCorrections)) {
+            const pend = (window.GTXDictReview && window.GTXDictReview.loadPending()) || {};
+            for (const [wrong, right] of Object.entries(newCorrections || {})) {
+                if (typeof wrong !== 'string' || typeof right !== 'string') continue;
                 const w = wrong.toLowerCase().trim();
                 const r = right.trim();
-                // Evitamos duplicados, vacíos o que sean idénticas
-                if (w && r && w !== r.toLowerCase() && !correctionsDict[w] && esReglaDiccionarioSegura(w, r)) {
-                    correctionsDict[w] = r;
-                    correctionsMeta[w] = { auto: true, date: new Date().toLocaleDateString() };
-                    addedCount++;
-                }
+                if (!w || !r || w === r.toLowerCase()) continue;
+                if (correctionsDict[w] || pend[w]) continue;
+                if (window.GTXDictReview && window.GTXDictReview.isRejected(w, r)) continue;
+                if (!esReglaDiccionarioSegura(w, r)) continue;
+                pend[w] = { right: r, date: Date.now(), ctx: window.GTXDictReview ? window.GTXDictReview.context(original, w) : '' };
+                addedCount++;
             }
 
-            if (addedCount > 0) {
-                localStorage.setItem('custom_dict', JSON.stringify(correctionsDict));
-                localStorage.setItem('custom_dict_meta', JSON.stringify(correctionsMeta));
-                if (typeof renderDict === 'function') renderDict();
-                console.log(`Aprendidas ${addedCount} nuevas correcciones.`);
-                updateSyncIndicator('success');
-                setTimeout(() => {
-                    updateSyncIndicator('idle');
-                }, 3000);
-            } else {
-                updateSyncIndicator('idle');
+            if (addedCount > 0 && window.GTXDictReview) {
+                window.GTXDictReview.savePending(pend);
+                console.log(`${addedCount} corrección(es) propuesta(s) para revisar.`);
             }
+            updateSyncIndicator('idle');
         } else {
             updateSyncIndicator('idle');
         }
