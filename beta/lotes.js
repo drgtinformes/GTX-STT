@@ -384,6 +384,7 @@
             for (const p of pacientes) {
                 const q = (previo.pacientes || []).find(x => x.id === p.id);
                 if (q && q.informe) { p.informe = q.informe; p.estado = 'informado'; }
+                else if (q && q.estado === 'previo') p.estado = 'previo';
             }
             for (const q of (previo.pacientes || [])) {
                 for (const f of (q.archivos || []).filter(f => f.manual)) {
@@ -653,10 +654,11 @@
 .lote-modal-content{max-width:860px}
 .lote-row.informado{opacity:.62}
 .lote-row.no{opacity:.45}
+.lote-row.previo{opacity:.62}
 .lote-row.is-active{border-color:rgba(168,85,247,.75)}
 .lote-n{display:inline-block;min-width:26px;color:var(--text-secondary);font-weight:500}
 .lote-estado{font-size:.74rem;white-space:nowrap}
-.lote-estado.pendiente{color:#fbbf24}.lote-estado.informado{color:#86efac}.lote-estado.no{color:var(--text-secondary)}
+.lote-estado.pendiente{color:#fbbf24}.lote-estado.informado{color:#86efac}.lote-estado.no{color:var(--text-secondary)}.lote-estado.previo{color:#93c5fd}
 .lote-extra{color:#fbbf24}
 .lote-side-btns{display:flex;gap:6px}
 .lote-side-btns .btn{padding:6px 14px;font-size:.82rem}
@@ -729,10 +731,11 @@
         const pac = L.pacientes;
         const nInf = pac.filter(p => p.estado === 'informado').length;
         const nPend = pac.filter(p => p.estado === 'pendiente').length;
+        const nPrev = pac.filter(p => p.estado === 'previo').length;
         modal.querySelector('.lote-title').textContent = 'Lote · ' + L.asunto;
         modal.querySelector('.lote-status').textContent =
             `${L.fromName || L.fromEmail}` + (L.total > 1 ? ` · ${L.partes.length} de ${L.total} partes` : '') +
-            ` · ${pac.length} paciente(s) · ${nInf} informado(s) · ${nPend} pendiente(s)` + (L.fecha ? ` · fecha ${L.fecha}` : '') +
+            ` · ${pac.length} paciente(s) · ${nInf} informado(s)` + (nPrev ? ` · ${nPrev} ya informado(s) antes` : '') + ` · ${nPend} pendiente(s)` + (L.fecha ? ` · fecha ${L.fecha}` : '') +
             (L.conExcel ? '' : ' · sin Excel');
         const warns = [];
         if (L.faltan && L.faltan.length) warns.push(`Falta(n) la(s) parte(s) ${L.faltan.join(', ')} de ${L.total}. Algunos pacientes pueden no tener imágenes todavía; cuando llegue, ábrelo de nuevo desde Órdenes.`);
@@ -744,7 +747,7 @@
             const pdfs = p.archivos.filter(a => a.tipo === 'pdf');
             const est = estudios(p);
             const obs = [...new Set(p.examenes.map(e => e.obs).filter(Boolean))].join(' · ');
-            const estado = p.estado === 'informado' ? 'Informado ✓' : p.estado === 'no' ? 'No requiere informe' : 'Pendiente';
+            const estado = p.estado === 'informado' ? 'Informado ✓' : p.estado === 'previo' ? 'Ya informado antes ✓' : p.estado === 'no' ? 'No requiere informe' : 'Pendiente';
             return `
             <div class="order-row lote-row ${p.estado} ${activo && activo.pid === p.id && activo.key === L.key ? 'is-active' : ''}">
                 <div class="order-main">
@@ -760,6 +763,8 @@
                     <div class="lote-side-btns">
                         ${pdfs.map((a, i) => `<button class="lote-mini" data-pdf="${esc(p.id)}" data-i="${i}" title="${esc(a.filename)}">PDF${pdfs.length > 1 ? ' ' + (i + 1) : ''}</button>`).join('')}
                         ${p.estado === 'no' ? `<button class="lote-mini" data-incluir="${esc(p.id)}">Informar igual</button>` : ''}
+                        ${p.estado === 'pendiente' ? `<button class="lote-mini" data-previo="${esc(p.id)}" title="Ya lo informé en otra ocasión: viene en el lote solo como registro. No se adjunta nada al enviar.">Ya informado</button>` : ''}
+                        ${p.estado === 'previo' ? `<button class="lote-mini" data-incluir="${esc(p.id)}" title="Volver a dejarlo pendiente">Deshacer</button>` : ''}
                         <button class="btn ${p.estado === 'pendiente' ? 'primary-btn' : 'secondary-btn'}" data-lp="${esc(p.id)}">${p.estado === 'informado' ? 'Reabrir' : 'Abrir'}</button>
                     </div>
                 </div>
@@ -822,6 +827,12 @@
             if (p) { p.estado = 'pendiente'; await dbPut(actual); mostrarLista(); }
             return;
         }
+        const prev = e.target.closest('[data-previo]');
+        if (prev && actual) {
+            const p = actual.pacientes.find(x => x.id === prev.dataset.previo);
+            if (p) { p.estado = 'previo'; await dbPut(actual); mostrarLista(); renderChip(); }
+            return;
+        }
         const pdf = e.target.closest('[data-pdf]');
         if (pdf && actual) {
             const p = actual.pacientes.find(x => x.id === pdf.dataset.pdf);
@@ -866,7 +877,7 @@
         const pac = actual.pacientes;
         const idx = pac.indexOf(p) + 1;
         const nInf = pac.filter(x => x.estado === 'informado').length;
-        const porInformar = pac.filter(x => x.estado !== 'no').length;
+        const porInformar = pac.filter(x => x.estado !== 'no' && x.estado !== 'previo').length;
         chipEl.hidden = false;
         chipEl.innerHTML = `
             <i data-lucide="layers"></i>
@@ -874,7 +885,7 @@
                 <div class="chip-title">${idx}/${pac.length} · ${esc(p.nombre)}${p.edad ? ' · ' + esc(p.edad) : ''}</div>
                 <div class="chip-sub">${esc(estudios(p).join(' · ') || 'Sin exámenes en el Excel')} — Lote ${esc(actual.asunto)}</div>
             </div>
-            ${p.estado === 'informado' ? '<span class="done">Informado ✓</span>' : ''}
+            ${p.estado === 'informado' ? '<span class="done">Informado ✓</span>' : p.estado === 'previo' ? '<span class="done">Ya informado antes ✓</span>' : ''}
             <button data-lc="datos" title="Escribir nombre, edad y estudio al inicio del dictado">Insertar datos</button>
             <button data-lc="tablero" title="Ver las imágenes de este paciente"><i data-lucide="layout-panel-left"></i></button>
             <button data-lc="lista" title="Lista del lote"><i data-lucide="list"></i> ${nInf}/${porInformar}</button>
