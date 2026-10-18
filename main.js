@@ -310,6 +310,10 @@ class TemplateManager {
     constructor() {
         this.defaults = {
             'QVA': { name: 'Centro Radiológico QVA', base64: templatesBase64.QVA, isDefault: true },
+            // Sucursal Quillota: misma hoja que QVA. "3D" = Cone Beam con el bloque técnico del
+            // equipo Planmeca (ver PLANTILLAS_CON_BLOQUE_CBCT); "2D" = estudios sin CBCT.
+            'QUILLOTA_3D': { name: 'QUILLOTA 3D', base64: templatesBase64.QVA, isDefault: true },
+            'QUILLOTA_2D': { name: 'QUILLOTA 2D', base64: templatesBase64.QVA, isDefault: true },
             'TALCA': { name: 'Centro Radiológico TALCA', base64: templatesBase64.TALCA, isDefault: true },
             'PLANTILLA_MP': { name: 'PLANTILLA MP', base64: templatesBase64.PLANTILLA_MP, isDefault: true },
             'CENTALIS': { name: 'Centro Radiológico CENTALIS', base64: templatesBase64.CENTALIS, isDefault: true },
@@ -3435,12 +3439,14 @@ function adjustHeadersForSetTotal(text) {
     return text;
 }
 
-// === Red de seguridad CBCT: bloque de parámetros técnicos ===
-// El modelo (Gemini/Claude) a veces omite el bloque de parámetros del Cone-Beam
-// porque choca con las reglas de "cero alucinación / no copiar los ejemplos" del
-// prompt. Como ese bloque es texto fijo del equipo, lo insertamos por código para
-// garantizar que SIEMPRE aparezca. Solo se inyecta si el estudio es Cone-Beam y el
-// modelo NO lo incluyó (si el modelo ya lo puso, se respeta tal cual).
+// === Bloque de parámetros técnicos CBCT (solo plantilla QUILLOTA 3D) ===
+// Los valores (Planmeca Romexis, FOV 80x80x50, etc.) son del equipo de la sucursal
+// Quillota, así que el bloque SOLO va en los Cone Beam con plantilla QUILLOTA 3D.
+// - Plantilla QUILLOTA 3D: se fuerza el bloque estándar justo después de TIPO DE ESTUDIO
+//   (el modelo a veces lo omite o pone "Sin especificar").
+// - Cualquier otra plantilla: se ELIMINA el bloque aunque el modelo lo haya escrito
+//   (el prompt trae el bloque en sus ejemplos y el modelo tiende a copiarlo).
+// Se re-aplica al cambiar de plantilla con un informe ya generado en el editor.
 //
 // Si cambian los valores del equipo (FOV, vóxel, etc.), edítalos aquí:
 const CBCT_PARAM_LINES = [
@@ -3453,8 +3459,16 @@ const CBCT_PARAM_LINES = [
 ];
 // Distanciamiento por defecto si el dictado no menciona intervalo/distanciamiento:
 const CBCT_DIST_DEFAULT = "1,0";
+// Plantillas (id) que llevan el bloque técnico en los Cone Beam:
+const PLANTILLAS_CON_BLOQUE_CBCT = ['QUILLOTA_3D'];
+// Último dictado procesado: para recuperar el distanciamiento si se cambia de plantilla después.
+let _ultimoDictadoCBCT = "";
 
-function ensureCBCTParams(text, dictado = "") {
+function plantillaLlevaBloqueCBCT(templateId) {
+    return PLANTILLAS_CON_BLOQUE_CBCT.includes(templateId);
+}
+
+function ensureCBCTParams(text, dictado = "", templateId = (typeof templateSelect !== 'undefined' && templateSelect ? templateSelect.value : "")) {
     if (!text) return text;
 
     // 1. ¿El estudio es Cone-Beam? (se busca en la línea TIPO DE ESTUDIO)
@@ -3469,25 +3483,37 @@ function ensureCBCTParams(text, dictado = "") {
     const distMatch = (dictado + "\n" + text).match(/(?:distanciamiento|intervalo)\s*(?:de\s*)?(\d+(?:[.,]\d+)?)\s*mm/i);
     if (distMatch) dist = distMatch[1].replace(".", ",");
 
-    const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
-
-    // 3. Forzar el bloque completo a los valores ESTÁNDAR FIJOS del equipo. Se eliminan
-    //    las líneas de parámetros que haya escrito el modelo (Haiku tiende a ponerlas como
-    //    "Sin especificar"; Flash sí copiaba los valores de la plantilla) y se sustituyen
-    //    por el bloque fijo. El único dato del dictado que se conserva es el distanciamiento
-    //    (ya calculado). Las líneas se reconocen por su término técnico precedido de una
-    //    viñeta/guion, formato que no aparece en los hallazgos clínicos.
-    const isParamLine = (l) => /^\s*[-–—•*]\s*.*(par[aá]metros de exposici[oó]n|tama[ñn]o de campo de visi[oó]n|\bFOV\b|tama[ñn]o de v[oó]xel|se reconstruye la adquisici[oó]n volum[eé]trica|software\s+planmeca|romexis|panorex|cortes\s+paraxiales)/i.test(l);
-
+    // 3. Quitar SIEMPRE las líneas del bloque que haya escrito el modelo (con o sin viñeta).
+    //    Se reconocen por cómo EMPIEZAN, frases que no aparecen en los hallazgos clínicos.
+    const isParamLine = (l) => /^\s*(?:[-–—•*]\s*)?(par[aá]metros de exposici[oó]n|tama[ñn]o de campo de visi[oó]n|tama[ñn]o de v[oó]xel|se reconstruye la adquisici[oó]n volum[eé]trica|panorex y cortes paraxiales|cortes paraxiales\s*:)/i.test(l)
+        || /^\s*[-–—•*]\s*.*(\bFOV\b|software\s+planmeca|romexis)/i.test(l);
     const lines = text.split("\n").filter(l => !isParamLine(l));
 
-    // 4. Insertar el bloque estándar justo después de la línea "TIPO DE ESTUDIO".
+    // 4. Sin plantilla QUILLOTA 3D: el informe queda sin bloque.
+    if (!plantillaLlevaBloqueCBCT(templateId)) return lines.join("\n");
+
+    // 5. QUILLOTA 3D: insertar el bloque estándar justo después de la línea "TIPO DE ESTUDIO".
     const idx = lines.findIndex(l => /^\s*TIPO\s+DE\s+ESTUDIO/i.test(l));
     if (idx === -1) return text;
+    const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
     lines.splice(idx + 1, 0, bloque);
-    console.info("[CBCT] Bloque de parámetros técnicos normalizado a los valores estándar del equipo. Verifica FOV/exposición/distanciamiento si el estudio no fue estándar.");
+    console.info("[CBCT] Bloque de parámetros técnicos (QUILLOTA 3D) normalizado a los valores estándar del equipo. Verifica FOV/exposición/distanciamiento si el estudio no fue estándar.");
     return lines.join("\n");
 }
+
+// Al cambiar de plantilla con un informe Cone Beam ya en el editor, poner o quitar el bloque.
+templateSelect.addEventListener('change', () => {
+    try {
+        const area = document.getElementById('transcription');
+        if (!area || !area.value) return;
+        const nuevo = normalizarSaltos(ensureCBCTParams(area.value, _ultimoDictadoCBCT, templateSelect.value));
+        if (nuevo !== area.value) {
+            area.value = nuevo;
+            finalTranscript = nuevo;
+            try { localStorage.setItem(AUTOSAVE_KEY, nuevo); } catch (e) { /* noop */ }
+        }
+    } catch (e) { console.warn('[CBCT] No se pudo ajustar el bloque al cambiar de plantilla:', e); }
+});
 
 // Normaliza el espaciado del informe en DOS pasos:
 //  1) Colapsa TODA línea en blanco a un solo salto. Haiku tiende a meter una línea en
@@ -3546,6 +3572,7 @@ function postProcesarInforme(texto, dictado) {
     let t = texto;
     try { t = quitarSeparacionBitewingNoDictada(t, dictado); } catch (e) { console.warn(e); }
     t = adjustHeadersForSetTotal(t);
+    _ultimoDictadoCBCT = dictado || "";
     t = ensureCBCTParams(t, dictado);
     try { t = restaurarRangosDientes(t, dictado); } catch (e) { console.warn(e); }
     try { t = restaurarNomenclaturaEntera(t, dictado); } catch (e) { console.warn(e); }
