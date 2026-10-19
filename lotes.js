@@ -15,6 +15,11 @@
  *   (el botón Gmail NO responde el correo). Al final, "Enviar informes" manda UN correo
  *   nuevo con todos los Word adjuntos.
  * - El avance (informes hechos) queda guardado en el navegador (IndexedDB).
+ * - Asunto por defecto: lotes de LA CALERA / QUILLOTA / VILLA ALEMANA ->
+ *   "LA CALERA [ADQUISICION 16-10-2026 / ENTREGA 20-10-2026]" (entrega = 2 días hábiles, sin feriados).
+ * - Envío programado: se crea un BORRADOR en Gmail con la cabecera "X-GTX-Programado: <fecha ISO>"
+ *   y el script de Google Apps Script "gtx-envios-programados.gs" (cuenta drgtinformes) lo envía
+ *   a la hora indicada, aunque el computador esté apagado.
  */
 (function () {
     'use strict';
@@ -23,6 +28,10 @@
     const DEST_KEY = 'gtx_lotes_destino';       // { remitente: destinatario }
     const ACTIVE_KEY = 'gtx_lote_activo';       // { key, pid }
     const SENDER_TPL_KEY = 'gtx_sender_templates';
+    const PROG_KEY = 'gtx_lotes_programados';   // { claveLote: { draftId, sendAt, to, n, asunto } }
+    const HORA_KEY = 'gtx_lote_hora_prog';      // última hora usada al programar ("08:00")
+    const PROG_HEADER = 'X-GTX-Programado';
+    const ATRASO_MS = 20 * 60 * 1000;           // si el borrador sigue ahí 20 min después de la hora -> aviso
     const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
     const IMG_EXT = /\.(jpe?g|png|gif|bmp|webp|avif)$/i;
     const SHEET_EXT = /\.(xlsx|xls|csv)$/i;
@@ -96,6 +105,54 @@
     }
     const enviados = () => readJSON(SENT_KEY, {});
     const enviado = (key) => !!enviados()[key];
+    const marcarEnviado = (key, on) => { const s = enviados(); if (on) s[key] = Date.now(); else delete s[key]; safeSet(SENT_KEY, JSON.stringify(s)); };
+    const programados = () => readJSON(PROG_KEY, {});
+    function setProgramado(key, info) {
+        const m = programados();
+        if (info) m[key] = info; else delete m[key];
+        safeSet(PROG_KEY, JSON.stringify(m));
+    }
+
+    // =====================================================================
+    // Asunto de respuesta: "LA CALERA [ADQUISICION dd-mm-aaaa / ENTREGA dd-mm-aaaa]"
+    // =====================================================================
+    const CENTROS_ASUNTO = [['la calera', 'LA CALERA'], ['quillota', 'QUILLOTA'], ['villa alemana', 'VILLA ALEMANA']];
+    // Feriados nacionales que caen de lunes a viernes (los de fin de semana no afectan). Agregar años nuevos aquí.
+    const FERIADOS = new Set([
+        '2026-01-01', '2026-04-03', '2026-05-01', '2026-05-21', '2026-06-29', '2026-07-16',
+        '2026-09-18', '2026-10-12', '2026-12-08', '2026-12-25',
+        '2027-01-01', '2027-03-26', '2027-05-21', '2027-06-21', '2027-06-28', '2027-07-16',
+        '2027-10-11', '2027-11-01', '2027-12-08',
+    ]);
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    const dmy = (d) => `${pad2(d.getDate())}-${pad2(d.getMonth() + 1)}-${d.getFullYear()}`;
+    const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    function parseFecha(s) {
+        s = String(s || '');
+        let m = /(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/.exec(s);
+        let d = m ? new Date(+m[3], +m[2] - 1, +m[1]) : null;
+        if (!m) { m = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s); d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : null; }
+        return d && !isNaN(d) ? d : null;
+    }
+    const esHabil = (d) => d.getDay() !== 0 && d.getDay() !== 6 && !FERIADOS.has(ymd(d));
+    function sumarHabiles(d, n) {
+        const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        while (n > 0) { x.setDate(x.getDate() + 1); if (esHabil(x)) n--; }
+        return x;
+    }
+    function centroAsunto(L) {
+        const s = norm(L.asunto).replace(/[_\-]+/g, ' ');
+        const c = CENTROS_ASUNTO.find(([k]) => s.includes(k));
+        return c ? c[1] : null;
+    }
+    /** La fecha de adquisición es la del asunto del correo ("16-10-2026_DIEGO_LA CALERA"); si no, la del Excel. */
+    const fechaAdquisicion = (L) => parseFecha(L.asunto) || parseFecha(L.fecha);
+    function asuntoPorDefecto(L, entrega) {
+        const centro = centroAsunto(L), adq = fechaAdquisicion(L);
+        if (!centro || !adq) return 'Informes ' + L.asunto;
+        return `${centro} [ADQUISICION ${dmy(adq)} / ENTREGA ${dmy(entrega || sumarHabiles(adq, 2))}]`;
+    }
 
     // =====================================================================
     // Excel
@@ -399,6 +456,7 @@
             threadIds: o.threadIds.slice(), total: o.total || 1, partes: o.partes || [], faltan: o.faltan || [],
             fecha: excel ? excel.fecha : '', conExcel: !!excel, errorExcel: excel ? '' : errorExcel,
             pacientes, sinAsignar, creado: Date.now(), enviado: previo ? previo.enviado || null : null,
+            programado: previo ? previo.programado || null : null,
         };
     }
 
@@ -511,6 +569,7 @@
         }
         await dbPut(actual);
         renderChip();
+        if (actual.programado) await rehacerBorradorSeguro(actual);
         const pend = actual.pacientes.filter(x => x.estado === 'pendiente').length;
         toast(pend ? `Informe de ${p.nombre} guardado en el lote · quedan ${pend}. Usa "Siguiente".` : 'Último informe guardado. Ya puedes enviar el lote.', 'ok', 6000);
         return true;
@@ -527,7 +586,9 @@
         p.informe = { filename: p.informe.filename, blob: docData.blob, ts: Date.now() };
         await dbPut(rec);
         if (actual && actual.key === key) actual = rec;
-        return rec.enviado ? 'enviado' : 'ok';
+        if (rec.enviado) return 'enviado';
+        if (rec.programado) await rehacerBorradorSeguro(rec);
+        return 'ok';
     }
 
     // =====================================================================
@@ -544,11 +605,12 @@
         for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
         return btoa(bin);
     }
-    async function armarCorreo(to, asunto, cuerpo, informes) {
+    async function armarCorreo(to, asunto, cuerpo, informes, extra) {
         const bnd = 'gtx-lote-' + Date.now().toString(36);
         const out = [
             `To: ${to}`,
             `Subject: ${encWord(asunto)}`,
+            ...Object.entries(extra || {}).map(([k, v]) => `${k}: ${v}`),
             'MIME-Version: 1.0',
             `Content-Type: multipart/mixed; boundary="${bnd}"`,
             '',
@@ -576,14 +638,49 @@
         return out.join('\r\n');
     }
 
+    /** fetch a la API de Gmail con el token de la sesión. okStatus: estados extra que no son error (p. ej. 404). */
+    async function gmailFetch(path, opts, okStatus) {
+        opts = opts || {};
+        const tok = gapi.client.getToken();
+        const resp = await fetch('https://gmail.googleapis.com' + path, {
+            ...opts,
+            headers: { Authorization: 'Bearer ' + (tok && tok.access_token), ...(opts.headers || {}) },
+        });
+        if (resp.status === 401 || resp.status === 403) {
+            safeDel('gmail_access_token');
+            throw new Error('la sesión de Gmail expiró o no tiene permisos. Vuelve a intentarlo e inicia sesión con drgtinformes@gmail.com');
+        }
+        if (!resp.ok && !(okStatus || []).includes(resp.status)) {
+            let m = 'HTTP ' + resp.status;
+            try { const j = await resp.json(); m = (j.error && j.error.message) || m; } catch (e) { /* noop */ }
+            throw new Error(m);
+        }
+        return resp;
+    }
+    const listosDe = (rec) => rec.pacientes.filter(p => p.informe && p.estado === 'informado');
+    const fechaLarga = (ts) => new Date(ts).toLocaleString('es-CL', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+    /** Hora elegida en el formulario (ms) o null si "Enviar más tarde" no está marcado. NaN si está incompleta. */
+    function horaProgramada() {
+        if (!modal.querySelector('[data-le="prog"]').checked) return null;
+        const f = modal.querySelector('[data-le="prog-fecha"]').value;
+        const h = modal.querySelector('[data-le="prog-hora"]').value;
+        if (!f || !h) return NaN;
+        const [y, mo, d] = f.split('-').map(Number);
+        const [hh, mi] = h.split(':').map(Number);
+        return new Date(y, mo - 1, d, hh, mi).getTime();
+    }
+
     async function enviar() {
         if (!actual || !modal) return;
         const to = modal.querySelector('[data-le="to"]').value.trim();
         const asunto = modal.querySelector('[data-le="asunto"]').value.trim();
         const cuerpo = modal.querySelector('[data-le="cuerpo"]').value;
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to.split(',')[0].trim())) { toast('Escribe el correo de destino.', 'warn'); return; }
-        const listos = actual.pacientes.filter(p => p.informe && p.estado === 'informado');
+        const listos = listosDe(actual);
         if (!listos.length) { toast('Todavía no hay informes guardados en el lote.', 'warn'); return; }
+        const sendAt = horaProgramada();
+        if (sendAt !== null && (isNaN(sendAt) || sendAt < Date.now() + 60000)) { toast('Elige una fecha y hora futuras para el envío programado.', 'warn'); return; }
         const pend = actual.pacientes.filter(p => p.estado === 'pendiente');
         if (pend.length && !confirm(`Faltan ${pend.length} paciente(s) por informar:\n${pend.map(p => '• ' + p.nombre).join('\n')}\n\n¿Enviar igual los ${listos.length} informe(s) listos?`)) return;
         // Revisión de tanda: avisar si hay informes de este lote que todavía no se revisaron
@@ -594,43 +691,151 @@
             } catch (e) { /* noop */ }
         }
         if (actual.enviado && !confirm(`Este lote ya se envió el ${new Date(actual.enviado.ts).toLocaleString('es-CL')} a ${actual.enviado.to}. ¿Enviarlo otra vez?`)) return;
-        if (!confirm(`Se enviará un correo NUEVO a:\n${to}\n\nAsunto: ${asunto}\nAdjuntos: ${listos.length} informe(s) Word\n\n¿Enviar?`)) return;
+        if (actual.programado && !confirm(`Este lote ya tiene un envío programado para el ${fechaLarga(actual.programado.sendAt)}.\n\n¿Reemplazarlo por este ${sendAt === null ? 'envío inmediato' : 'nuevo envío programado'}?`)) return;
+        const resumen = `a:\n${to}\n\nAsunto: ${asunto}\nAdjuntos: ${listos.length} informe(s) Word`;
+        if (sendAt === null && !confirm(`Se enviará un correo NUEVO ${resumen}\n\n¿Enviar?`)) return;
+        if (sendAt !== null && !confirm(`Se PROGRAMARÁ un correo NUEVO ${resumen}\n\nSale el ${fechaLarga(sendAt)}.\nQueda como borrador en Gmail hasta esa hora (puedes cancelarlo desde aquí).\n\n¿Programar?`)) return;
 
         const btn = modal.querySelector('[data-lm="enviar"]');
         const txt = btn.textContent;
-        btn.disabled = true; btn.textContent = 'Enviando…';
+        btn.disabled = true; btn.textContent = sendAt === null ? 'Enviando…' : 'Programando…';
         try {
             await asegurarGmail();
-            const raw = await armarCorreo(to, asunto, cuerpo, listos.map(p => p.informe));
-            const tok = gapi.client.getToken();
-            const resp = await fetch('https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media', {
-                method: 'POST',
-                headers: { Authorization: 'Bearer ' + (tok && tok.access_token), 'Content-Type': 'message/rfc822' },
-                body: raw,
-            });
-            if (resp.status === 401 || resp.status === 403) {
-                safeDel('gmail_access_token');
-                throw new Error('la sesión de Gmail expiró o no tiene permisos. Vuelve a presionar "Enviar" e inicia sesión con drgtinformes@gmail.com');
+            // Si había un envío programado, se borra su borrador antes de enviar/programar de nuevo
+            if (actual.programado) await borrarBorrador(actual.programado.draftId);
+            actual.programado = null;
+            setProgramado(actual.key, null);
+
+            if (sendAt === null) {
+                const raw = await armarCorreo(to, asunto, cuerpo, listos.map(p => p.informe));
+                await gmailFetch('/upload/gmail/v1/users/me/messages/send?uploadType=media', { method: 'POST', headers: { 'Content-Type': 'message/rfc822' }, body: raw });
+                actual.enviado = { ts: Date.now(), to, n: listos.length };
+                toast(`Lote enviado: ${listos.length} informe(s) a ${to}.`, 'ok', 7000);
+            } else {
+                actual.programado = { sendAt, to, asunto, cuerpo, n: listos.length, ts: Date.now() };
+                await crearBorrador(actual);
+                safeSet(HORA_KEY, hm(new Date(sendAt)));
+                toast(`Lote programado: ${listos.length} informe(s) a ${to} · sale el ${fechaLarga(sendAt)}.`, 'ok', 8000);
             }
-            if (!resp.ok) {
-                let m = 'HTTP ' + resp.status;
-                try { const j = await resp.json(); m = (j.error && j.error.message) || m; } catch (e) { /* noop */ }
-                throw new Error(m);
-            }
-            actual.enviado = { ts: Date.now(), to, n: listos.length };
             await dbPut(actual);
-            const s = enviados(); s[actual.key] = Date.now(); safeSet(SENT_KEY, JSON.stringify(s));
+            marcarEnviado(actual.key, true);
             const d = readJSON(DEST_KEY, {}); d[actual.fromEmail] = to; safeSet(DEST_KEY, JSON.stringify(d));
             if (activo && activo.key === actual.key) setActivo(null);
-            toast(`Lote enviado: ${listos.length} informe(s) a ${to}.`, 'ok', 7000);
             cerrarLista();
             if (window.GTXOrders && window.GTXOrders.refresh) window.GTXOrders.refresh(false);
         } catch (e) {
             console.error('Envío del lote:', e);
-            alert('No se pudo enviar el lote: ' + (e.message || e));
+            alert((sendAt === null ? 'No se pudo enviar el lote: ' : 'No se pudo programar el lote: ') + (e.message || e));
+            if (actual.programado && !actual.programado.draftId) actual.programado = null;
+            await dbPut(actual).catch(() => {});
         } finally {
             btn.disabled = false; btn.textContent = txt;
         }
+    }
+
+    // =====================================================================
+    // Envío programado (borrador en Gmail + script de Apps Script)
+    // =====================================================================
+    async function rawProgramado(rec) {
+        const P = rec.programado;
+        const listos = listosDe(rec);
+        P.n = listos.length;
+        return armarCorreo(P.to, P.asunto, P.cuerpo, listos.map(p => p.informe), { [PROG_HEADER]: new Date(P.sendAt).toISOString() });
+    }
+    /** Crea (o, si ya existe, reescribe) el borrador del envío programado y verifica que Gmail conservó la cabecera. */
+    async function crearBorrador(rec) {
+        const P = rec.programado;
+        const raw = await rawProgramado(rec);
+        const path = P.draftId ? `/upload/gmail/v1/users/me/drafts/${P.draftId}?uploadType=media` : '/upload/gmail/v1/users/me/drafts?uploadType=media';
+        const j = await (await gmailFetch(path, { method: P.draftId ? 'PUT' : 'POST', headers: { 'Content-Type': 'message/rfc822' }, body: raw })).json();
+        P.draftId = j.id;
+        setProgramado(rec.key, { draftId: P.draftId, sendAt: P.sendAt, to: P.to, n: P.n, asunto: P.asunto });
+        // Comprobar que la marca de hora quedó en el borrador (es lo que lee el script)
+        try {
+            const m = await (await gmailFetch(`/gmail/v1/users/me/messages/${j.message.id}?format=metadata&metadataHeaders=${PROG_HEADER}`)).json();
+            const ok = ((m.payload && m.payload.headers) || []).some(h => h.name.toLowerCase() === PROG_HEADER.toLowerCase());
+            if (!ok) toast('Ojo: Gmail no conservó la marca de programación en el borrador. Ábrelo en Gmail y prográmalo a mano ("Programar envío").', 'error', 12000);
+        } catch (e) { console.warn('No se pudo verificar el borrador programado', e); }
+    }
+    async function borrarBorrador(draftId) {
+        if (draftId) await gmailFetch(`/gmail/v1/users/me/drafts/${draftId}`, { method: 'DELETE' }, [404]);
+    }
+    /** Tras cambiar un Word de un lote programado: el borrador se rehace con los informes actuales. */
+    async function rehacerBorradorSeguro(rec) {
+        try {
+            await asegurarGmail();
+            const existe = (await gmailFetch(`/gmail/v1/users/me/drafts/${rec.programado.draftId}?format=minimal`, {}, [404])).status !== 404;
+            if (!existe) { await marcarSalido(rec); return; }
+            await crearBorrador(rec);
+            await dbPut(rec);
+            toast('Envío programado actualizado con el informe nuevo.', 'ok', 4000);
+        } catch (e) {
+            console.error('Borrador programado:', e);
+            toast('El Word quedó en el lote, pero NO se pudo actualizar el envío programado: ' + (e.message || e) + '. Vuelve a programarlo.', 'error', 12000);
+        }
+    }
+    /** El borrador ya no está y pasó la hora -> el script lo envió. */
+    async function marcarSalido(rec) {
+        const P = rec.programado;
+        rec.enviado = { ts: P.sendAt, to: P.to, n: P.n, programado: true };
+        rec.programado = null;
+        setProgramado(rec.key, null);
+        await dbPut(rec);
+    }
+    async function cancelarProgramado() {
+        if (!actual || !actual.programado) return;
+        if (!confirm(`¿Cancelar el envío programado para el ${fechaLarga(actual.programado.sendAt)}?\n\nSe borra el borrador en Gmail; los informes siguen guardados en el lote.`)) return;
+        try {
+            await asegurarGmail();
+            await borrarBorrador(actual.programado.draftId);
+            actual.programado = null;
+            setProgramado(actual.key, null);
+            if (!actual.enviado) marcarEnviado(actual.key, false);
+            await dbPut(actual);
+            toast('Envío programado cancelado.', 'ok');
+            mostrarLista();
+            if (window.GTXOrders && window.GTXOrders.refresh) window.GTXOrders.refresh(false);
+        } catch (e) { alert('No se pudo cancelar: ' + (e.message || e)); }
+    }
+    async function enviarAhoraProgramado() {
+        if (!actual || !actual.programado) return;
+        if (!confirm(`¿Enviar AHORA el lote programado (${actual.programado.n} informe(s) a ${actual.programado.to})?`)) return;
+        try {
+            await asegurarGmail();
+            const r = await gmailFetch('/gmail/v1/users/me/drafts/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: actual.programado.draftId }) }, [404]);
+            if (r.status === 404) toast('El borrador ya no estaba en Gmail (probablemente ya salió).', 'warn', 7000);
+            else toast('Lote enviado.', 'ok');
+            actual.programado.sendAt = Math.min(actual.programado.sendAt, Date.now());
+            await marcarSalido(actual);
+            mostrarLista();
+        } catch (e) { alert('No se pudo enviar: ' + (e.message || e)); }
+    }
+
+    /**
+     * Revisa los envíos programados cuya hora ya pasó (sin abrir ventanas de login: solo si hay sesión de Gmail).
+     * Si el borrador desapareció -> quedó enviado. Si sigue ahí 20 min después -> aviso (¿script instalado?).
+     */
+    const avisados = new Set();
+    async function revisarProgramados() {
+        const m = programados();
+        const vencidos = Object.keys(m).filter(k => m[k].sendAt <= Date.now());
+        if (!vencidos.length) return;
+        if (typeof loadGmailToken !== 'function' || !loadGmailToken() || typeof gapi === 'undefined' || !gapi.client) return;
+        gapi.client.setToken(loadGmailToken());
+        let cambio = false;
+        for (const key of vencidos) {
+            try {
+                const rec = (actual && actual.key === key) ? actual : await dbGet(key);
+                if (!rec || !rec.programado) { setProgramado(key, null); continue; }
+                const r = await gmailFetch(`/gmail/v1/users/me/drafts/${rec.programado.draftId}?format=minimal`, {}, [404]);
+                if (r.status === 404) { await marcarSalido(rec); cambio = true; }
+                else if (Date.now() > rec.programado.sendAt + ATRASO_MS && !avisados.has(key)) {
+                    avisados.add(key);
+                    toast(`El lote "${rec.asunto}" debía salir el ${fechaLarga(rec.programado.sendAt)} y sigue como borrador. Revisa el script de envíos programados o usa "Enviar ahora" en la lista del lote.`, 'error', 15000);
+                }
+            } catch (e) { console.warn('Revisión de envío programado', key, e); }
+        }
+        if (cambio && actual && modal && !modal.classList.contains('hidden')) mostrarLista();
     }
 
     // =====================================================================
@@ -673,6 +878,16 @@
 .lote-envio .grid{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;font-size:.84rem;color:var(--text-secondary)}
 .lote-envio textarea{min-height:44px;resize:vertical}
 .lote-envio .acciones{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px;font-size:.8rem;color:var(--text-secondary)}
+.lote-prog{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.lote-prog-chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-primary)}
+.lote-prog-chk input{accent-color:#a855f7;width:15px;height:15px}
+.lote-prog input[type=date],.lote-prog input[type=time]{padding:5px 8px;background:rgba(15,23,42,.6);color:var(--text-primary);border:1px solid var(--glass-border);border-radius:8px;font:inherit;font-size:.84rem;color-scheme:dark}
+.lote-prog [hidden]{display:none}
+.lote-prog-info{font-size:.78rem;color:var(--text-secondary)}
+.lote-prog-estado{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;padding:8px 12px;border-radius:10px;background:rgba(168,85,247,.10);border:1px solid rgba(168,85,247,.45);font-size:.84rem}
+.lote-prog-estado:empty{display:none}
+.lote-prog-estado span{flex:1;min-width:200px}
+.lote-prog-estado.atrasado{background:rgba(239,68,68,.10);border-color:rgba(239,68,68,.5)}
 .lote-mini{background:transparent;border:1px solid var(--glass-border);color:var(--text-primary);border-radius:7px;padding:3px 8px;font:500 .74rem 'Outfit',sans-serif;cursor:pointer}
 .lote-mini:hover{background:rgba(255,255,255,.1)}`;
         document.head.appendChild(st);
@@ -703,7 +918,15 @@
                             <label>Para</label><input type="text" data-le="to" placeholder="correo@centro.cl">
                             <label>Asunto</label><input type="text" data-le="asunto">
                             <label>Mensaje</label><textarea data-le="cuerpo" placeholder="(opcional)"></textarea>
+                            <label>Envío</label>
+                            <div class="lote-prog">
+                                <label class="lote-prog-chk"><input type="checkbox" data-le="prog"> Programar para más tarde</label>
+                                <input type="date" data-le="prog-fecha" hidden>
+                                <input type="time" data-le="prog-hora" step="300" hidden>
+                                <span class="lote-prog-info"></span>
+                            </div>
                         </div>
+                        <div class="lote-prog-estado"></div>
                         <div class="acciones">
                             <span class="lote-envio-info"></span>
                             <button class="btn primary-btn" data-lm="enviar">Enviar informes</button>
@@ -714,6 +937,7 @@
         document.body.appendChild(modal);
         modal.addEventListener('click', onModalClick);
         modal.addEventListener('change', onModalChange);
+        modal.addEventListener('input', onProgInput);
 
         chipEl = document.createElement('div');
         chipEl.id = 'lote-chip';
@@ -739,7 +963,7 @@
             (L.conExcel ? '' : ' · sin Excel');
         const warns = [];
         if (L.faltan && L.faltan.length) warns.push(`Falta(n) la(s) parte(s) ${L.faltan.join(', ')} de ${L.total}. Algunos pacientes pueden no tener imágenes todavía; cuando llegue, ábrelo de nuevo desde Órdenes.`);
-        if (L.enviado) warns.push(`Ya enviado el ${new Date(L.enviado.ts).toLocaleString('es-CL')} a ${esc(L.enviado.to)} (${L.enviado.n} informe(s)).`);
+        if (L.enviado) warns.push(`Ya enviado${L.enviado.programado ? ' (programado)' : ''} el ${new Date(L.enviado.ts).toLocaleString('es-CL')} a ${L.enviado.to} (${L.enviado.n} informe(s)).`);
         modal.querySelector('.lote-warn').innerHTML = warns.map(esc).join('<br>');
 
         modal.querySelector('.lote-list').innerHTML = pac.map(p => {
@@ -790,15 +1014,77 @@
         const toEl = modal.querySelector('[data-le="to"]');
         const asEl = modal.querySelector('[data-le="asunto"]');
         if (modal.dataset.key !== L.key) {
-            toEl.value = dest;
-            asEl.value = 'Informes ' + L.asunto;
-            modal.querySelector('[data-le="cuerpo"]').value = '';
+            toEl.value = L.programado ? L.programado.to : dest;
+            asEl.value = L.programado ? L.programado.asunto : asuntoPorDefecto(L);
+            modal.dataset.asuntoAuto = asuntoPorDefecto(L);
+            modal.querySelector('[data-le="cuerpo"]').value = L.programado ? (L.programado.cuerpo || '') : '';
+            modal.querySelector('[data-le="prog"]').checked = false;
+            prepararProgramacion();
             modal.dataset.key = L.key;
         }
+        const P = L.programado;
+        const est = modal.querySelector('.lote-prog-estado');
+        const atrasado = P && Date.now() > P.sendAt + ATRASO_MS;
+        est.classList.toggle('atrasado', !!atrasado);
+        est.innerHTML = P ? `
+            <span>${atrasado ? '⚠ Debía salir' : '🕒 Programado para'} el <b>${esc(fechaLarga(P.sendAt))}</b> · ${esc(P.n)} informe(s) a ${esc(P.to)}${atrasado ? ' y sigue como borrador en Gmail (¿está instalado el script?)' : ''}</span>
+            <button class="lote-mini" data-lm="prog-ahora">Enviar ahora</button>
+            <button class="lote-mini" data-lm="prog-cancelar">Cancelar programación</button>` : '';
         modal.querySelector('.lote-envio-info').textContent = `${nInf} informe(s) listo(s)` + (nPend ? ` · ${nPend} pendiente(s)` : '');
-        modal.querySelector('[data-lm="enviar"]').textContent = `Enviar ${nInf} informe(s)`;
+        actualizarBotonEnvio();
         modal.classList.remove('hidden');
         if (window.lucide) window.lucide.createIcons({ root: modal });
+        if (P && P.sendAt <= Date.now()) revisarProgramados();
+    }
+
+    function actualizarBotonEnvio() {
+        if (!modal || !actual) return;
+        const n = listosDe(actual).length;
+        const prog = modal.querySelector('[data-le="prog"]').checked;
+        modal.querySelector('[data-lm="enviar"]').textContent = prog ? `Programar ${n} informe(s)` : `Enviar ${n} informe(s)`;
+    }
+
+    /** Fecha/hora por defecto del envío programado: día de entrega (o mañana) a la última hora usada. */
+    function prepararProgramacion() {
+        const L = actual;
+        const adq = fechaAdquisicion(L);
+        const hora = safeGet(HORA_KEY) || '08:00';
+        const [hh, mi] = hora.split(':').map(Number);
+        let dia = adq ? sumarHabiles(adq, 2) : null;
+        const hoy = new Date();
+        if (!dia || new Date(dia.getFullYear(), dia.getMonth(), dia.getDate(), hh, mi) <= hoy) {
+            dia = sumarHabiles(hoy, 1);
+        }
+        modal.querySelector('[data-le="prog-fecha"]').value = ymd(dia);
+        modal.querySelector('[data-le="prog-hora"]').value = hora;
+        modal.querySelector('[data-le="prog-fecha"]').min = ymd(hoy);
+        mostrarCamposProg();
+    }
+    function mostrarCamposProg() {
+        const on = modal.querySelector('[data-le="prog"]').checked;
+        modal.querySelector('[data-le="prog-fecha"]').hidden = !on;
+        modal.querySelector('[data-le="prog-hora"]').hidden = !on;
+        const t = horaProgramada();
+        modal.querySelector('.lote-prog-info').textContent = on && t && !isNaN(t)
+            ? (t < Date.now() + 60000 ? 'esa hora ya pasó' : new Date(t).toLocaleDateString('es-CL', { weekday: 'long' }))
+            : '';
+    }
+    /** Si el asunto sigue siendo el automático, ENTREGA se ajusta al día del envío programado. */
+    function sincronizarAsunto() {
+        if (!actual || !centroAsunto(actual) || !fechaAdquisicion(actual)) return;
+        const asEl = modal.querySelector('[data-le="asunto"]');
+        if (asEl.value.trim() !== (modal.dataset.asuntoAuto || '').trim()) return;   // lo editó a mano: no tocar
+        const t = horaProgramada();
+        const nuevo = asuntoPorDefecto(actual, t && !isNaN(t) ? new Date(t) : null);
+        asEl.value = nuevo;
+        modal.dataset.asuntoAuto = nuevo;
+    }
+    function onProgInput(e) {
+        const k = e.target.dataset && e.target.dataset.le;
+        if (k !== 'prog' && k !== 'prog-fecha' && k !== 'prog-hora') return;
+        mostrarCamposProg();
+        sincronizarAsunto();
+        actualizarBotonEnvio();
     }
 
     async function onModalClick(e) {
@@ -808,6 +1094,8 @@
             const a = lm.dataset.lm;
             if (a === 'cerrar') cerrarLista();
             else if (a === 'enviar') enviar();
+            else if (a === 'prog-cancelar') cancelarProgramado();
+            else if (a === 'prog-ahora') enviarAhoraProgramado();
             else if (a === 'releer' && actual) {
                 try {
                     toast('Releyendo correos y Excel…', 'info', 3000);
@@ -924,12 +1212,18 @@
             else setActivo(null);
         }).catch(() => setActivo(null));
     }
+    // Envíos programados: al cargar Google y cada 5 min se revisa si ya salieron
+    document.addEventListener('gmailReady', () => setTimeout(revisarProgramados, 3000));
+    setTimeout(revisarProgramados, 15000);   // por si Google cargó antes que este script
+    setInterval(revisarProgramados, 5 * 60 * 1000);
 
     window.GTXLotes = {
         esLote, infoAsunto, clave, enviado, abrir, guardarInforme, reemplazarInforme, mostrarLista, siguiente,
         get activo() { return pacienteActivo() ? { key: activo.key, pid: activo.pid, nombre: pacienteActivo().nombre } : null; },
         salir: () => setActivo(null),
         // para pruebas
+        revisarProgramados,
         _agrupar: agrupar, _leerExcel: leerExcel, _textoDatos: textoDatos, _nombreDeArchivo: nombreDeArchivo, _armarCorreo: armarCorreo,
+        _asuntoPorDefecto: asuntoPorDefecto, _sumarHabiles: sumarHabiles,
     };
 })();
