@@ -533,7 +533,8 @@ UMBRAL
 .tanda-edit{width:100%;min-height:220px;margin-top:8px;padding:8px;background:rgba(15,23,42,.7);color:var(--text-primary);border:1px solid var(--glass-border);border-radius:8px;font:.84rem/1.45 'Outfit',sans-serif;resize:vertical}
 .tanda-vacio{padding:24px;text-align:center;color:var(--text-secondary)}
 .tanda-foot{margin-top:12px;padding-top:10px;border-top:1px solid var(--glass-border);font-size:.78rem;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.tanda-foot .sp{flex:1}`;
+.tanda-foot .sp{flex:1}
+.tanda-del:not(:disabled):hover{border-color:rgba(239,68,68,.6);color:#fca5a5}`;
         document.head.appendChild(st);
     }
 
@@ -563,6 +564,7 @@ UMBRAL
                         <div class="info"></div>
                         <button class="btn primary-btn" data-t="revisar"><i data-lucide="sparkles"></i> <span>Revisar pendientes</span></button>
                         <button class="btn secondary-btn" data-t="todo" title="Volver a revisar todos los informes de hoy (p. ej. al cerrar la jornada)">Revisar todo hoy</button>
+                        <button class="btn secondary-btn tanda-del" data-t="borrar-pend" title="Sacar de la tanda todos los informes pendientes sin revisarlos (no borra los Word ni los lotes)"><i data-lucide="trash-2"></i> <span>Eliminar pendientes</span></button>
                     </div>
                     <div class="tanda-estado"></div>
                     <div class="tanda-resumen"></div>
@@ -671,6 +673,9 @@ UMBRAL
         bRev.disabled = revisando || nPend === 0;
         bRev.querySelector('span').textContent = revisando ? 'Revisando…' : `Revisar pendientes (${nPend})`;
         modal.querySelector('[data-t="todo"]').disabled = revisando || nHoy === 0;
+        const bDel = modal.querySelector('[data-t="borrar-pend"]');
+        bDel.disabled = revisando || nPend === 0;
+        bDel.querySelector('span').textContent = `Eliminar pendientes (${nPend})`;
         setEstado(estadoMsg, estadoErr);
         modal.querySelector('.tanda-resumen').textContent = ultimoResumen;
 
@@ -704,6 +709,22 @@ UMBRAL
         if (t === 'revisar') return revisar();
         if (t === 'todo') {
             if (confirm('¿Volver a revisar TODOS los informes de hoy, incluidos los ya revisados?')) return revisar({ todo: true });
+            return;
+        }
+        if (t === 'borrar-pend') {
+            if (revisando) return;
+            const pend = (await todos()).filter(r => r.estado === 'pendiente');
+            if (!pend.length) { toast('No hay informes pendientes.', 'info'); return; }
+            if (!confirm(`¿Eliminar de la tanda los ${pend.length} informe(s) pendiente(s) sin revisarlos?\n\nNo se borran los Word, los correos ni los lotes; solo dejan de aparecer aquí.`)) return;
+            b.disabled = true;
+            try {
+                for (const r of pend) { await del(r.id); abiertos.delete(r.id); }
+                setEstado('');
+                toast(`${pend.length} informe(s) pendiente(s) eliminados de la tanda.`, 'ok', 3500);
+            } catch (er) {
+                console.error(er);
+                alert('No se pudieron eliminar los pendientes: ' + (er.message || er));
+            } finally { actualizarBoton(); render(); }
             return;
         }
         if (t === 'perfil-subir') { modal.querySelector('[data-t="perfil-file"]').click(); return; }
