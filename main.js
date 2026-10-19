@@ -3757,7 +3757,10 @@ function verificarContenidoDictado(dictado, informe) {
     }
 
     // 2) Estudios dictados que no quedaron en TIPO DE ESTUDIO.
+    //    Las menciones dentro de una sugerencia ("se sugiere complementar con radiografía periapical
+    //    del diente 3.6") NO son estudios realizados: esa frase se ignora hasta el punto o punto y coma.
     const tipo = _normDict(((informe || '').match(/TIPO\s+DE\s+ESTUDIO\s*:\s*([^\n\r]+)/i) || [])[1] || '');
+    const ndEstudios = nd.replace(/\b(?:suger|sugier|recomend|recomiend|complement|aconsej|solicit|deriv|control(?:ar)?\s+con)[a-z]*[^.;]{0,200}/g, ' ');
     if (tipo) {
         const ESTUDIOS = [
             ['Radiografía Panorámica', /panoramica/, /panoramica/],
@@ -3768,7 +3771,7 @@ function verificarContenidoDictado(dictado, informe) {
             ['Set Total', /set\s+total/, /set\s+total/]
         ];
         ESTUDIOS.forEach(([nombre, enDictado, enTipo]) => {
-            if (enDictado.test(nd) && !enTipo.test(tipo)) {
+            if (enDictado.test(ndEstudios) && !enTipo.test(tipo)) {
                 avisos.push(`TIPO DE ESTUDIO: dictaste "${nombre}" pero no aparece en el tipo de estudio. Revísalo.`);
             }
         });
