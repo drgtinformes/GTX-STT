@@ -816,6 +816,28 @@
      * Si el borrador desapareció -> quedó enviado. Si sigue ahí 20 min después -> aviso (¿script instalado?).
      */
     const avisados = new Set();
+
+    /**
+     * Comprueba en la carpeta Enviados si el correo programado ya salió (mismo asunto y destinatario, enviado desde
+     * 10 min antes de la hora programada). Sirve cuando el borrador sigue visible en Gmail aunque el correo ya salió.
+     */
+    async function yaEnviadoEnGmail(rec) {
+        const P = rec.programado;
+        const desde = Math.floor((P.sendAt - 10 * 60 * 1000) / 1000);
+        const asunto = String(P.asunto || '').replace(/["\\]/g, ' ').trim();
+        const q = `in:sent after:${desde}` + (asunto ? ` subject:"${asunto}"` : '');
+        const lista = await (await gmailFetch(`/gmail/v1/users/me/messages?q=${encodeURIComponent(q)}&maxResults=10`)).json();
+        const primerDest = String(P.to || '').split(',')[0].trim().toLowerCase();
+        for (const it of (lista.messages || [])) {
+            const m = await (await gmailFetch(`/gmail/v1/users/me/messages/${it.id}?format=metadata&metadataHeaders=To&metadataHeaders=Subject`)).json();
+            if (Number(m.internalDate) < P.sendAt - 10 * 60 * 1000) continue;
+            const h = (n) => (((m.payload && m.payload.headers) || []).find(x => x.name.toLowerCase() === n) || {}).value || '';
+            if (primerDest && !h('to').toLowerCase().includes(primerDest)) continue;
+            return true;
+        }
+        return false;
+    }
+
     async function revisarProgramados() {
         const m = programados();
         const vencidos = Object.keys(m).filter(k => m[k].sendAt <= Date.now());
@@ -828,7 +850,22 @@
                 const rec = (actual && actual.key === key) ? actual : await dbGet(key);
                 if (!rec || !rec.programado) { setProgramado(key, null); continue; }
                 const r = await gmailFetch(`/gmail/v1/users/me/drafts/${rec.programado.draftId}?format=minimal`, {}, [404]);
-                if (r.status === 404) { await marcarSalido(rec); cambio = true; }
+                if (r.status === 404) { await marcarSalido(rec); cambio = true; continue; }
+                // El borrador sigue en Gmail: puede ser que el correo ya haya salido igual (borrador residual / ID desfasado)
+                let yaSalio = false;
+                try {
+                    const dj = await r.json();
+                    const lbl = (dj.message && dj.message.labelIds) || [];
+                    yaSalio = lbl.includes('SENT') && !lbl.includes('DRAFT');
+                } catch (e) { /* noop */ }
+                if (!yaSalio && Date.now() > rec.programado.sendAt + 5 * 60 * 1000) {
+                    try { yaSalio = await yaEnviadoEnGmail(rec); } catch (e) { console.warn('Búsqueda en Enviados', key, e); }
+                }
+                if (yaSalio) {
+                    // Se quita el borrador residual para que el script no lo vuelva a enviar
+                    try { await borrarBorrador(rec.programado.draftId); } catch (e) { console.warn('No se pudo borrar el borrador residual', e); }
+                    await marcarSalido(rec); cambio = true;
+                }
                 else if (Date.now() > rec.programado.sendAt + ATRASO_MS && !avisados.has(key)) {
                     avisados.add(key);
                     toast(`El lote "${rec.asunto}" debía salir el ${fechaLarga(rec.programado.sendAt)} y sigue como borrador. Revisa el script de envíos programados o usa "Enviar ahora" en la lista del lote.`, 'error', 15000);
