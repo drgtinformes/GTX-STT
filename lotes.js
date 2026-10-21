@@ -309,6 +309,8 @@
     function textoDatos(p) {
         const partes = [`Paciente: ${p.nombre}.`];
         if (p.edad) partes.push(`Edad: ${p.edad}.`);
+        if (p.etiqueta && p.etiqueta.doctor) partes.push(`Dr(a). ${p.etiqueta.doctor}.`);
+        if (p.etiqueta && p.etiqueta.fecha) partes.push(`Fecha: ${p.etiqueta.fecha}.`);
         const est = estudios(p);
         if (est.length) partes.push(`Tipo de estudio: ${unir(est)}.`);
         return partes.join(' ') + '\n';
@@ -442,6 +444,7 @@
                 const q = (previo.pacientes || []).find(x => x.id === p.id);
                 if (q && q.informe) { p.informe = q.informe; p.estado = 'informado'; }
                 else if (q && q.estado === 'previo') p.estado = 'previo';
+                if (q && q.etiquetaLeida) { p.etiquetaLeida = true; p.etiqueta = q.etiqueta || null; }
             }
             for (const q of (previo.pacientes || [])) {
                 for (const f of (q.archivos || []).filter(f => f.manual)) {
@@ -518,21 +521,88 @@
         }
 
         const imgs = p.archivos.filter(a => a.tipo === 'img');
+        const rec = actual;
         if (window.GTXWorkstation && imgs.length) {
+            let bajadas = null;
             try {
                 const n = await window.GTXWorkstation.openBoard('lote:' + actual.key + ':' + p.id, p.nombre + ' — ' + actual.asunto, () => {
                     toast(`Bajando ${imgs.length} imagen(es) de ${p.nombre}…`, 'info', 2500);
-                    return bajarImagenes(imgs);
+                    return bajarImagenes(imgs).then(f => (bajadas = f));
                 });
                 if (n) toast(`${n} imagen(es) en el tablero`, 'ok', 2500);
             } catch (e) {
                 console.error(e);
                 toast('No se pudieron bajar las imágenes: ' + (e.message || e), 'error', 7000);
             }
+            // Etiqueta de la orden (Dr(a). y fecha): se lee aunque el tablero ya tuviera las imágenes guardadas
+            leerEtiquetaPaciente(rec, p, imgs, bajadas);
+        } else if (imgs.length) {
+            leerEtiquetaPaciente(rec, p, imgs, null);
         } else if (!imgs.length) {
             toast(`${p.nombre}: no hay imágenes en las partes recibidas` + (actual.faltan.length ? ' (puede venir en la parte que falta).' : '.'), 'warn', 7000);
         }
         if (p.archivos.some(a => a.tipo === 'pdf')) toast('Este paciente tiene un PDF adjunto: ábrelo desde la lista del lote.', 'info', 6000);
+    }
+
+    // =====================================================================
+    // Etiqueta de la orden: timbre con Nombre / RUN / FN / Rx / Dr(a). / fecha (lectura con visión, etiqueta.js)
+    // =====================================================================
+    const leyendoEtq = new Set();
+    const dictando = () => { try { return typeof isRecording !== 'undefined' && !!isRecording; } catch (e) { return false; } };
+
+    /** Agrega "Dr(a). X. Fecha: …" al dictado, justo después de "Edad: …" (o de "Paciente: …"). forzar ignora lo ya dictado. */
+    function insertarEtiquetaLote(p, forzar) {
+        const e = p.etiqueta;
+        const ta = document.getElementById('transcription');
+        if (!e || !ta) return false;
+        const v = ta.value;
+        const partes = [];
+        if (e.doctor && !v.includes(e.doctor) && (forzar || !/\b(dr\(a\)|dra?|doctora?)\b/i.test(v))) partes.push(`Dr(a). ${e.doctor}.`);
+        if (e.fecha && !v.includes(e.fecha) && (forzar || !/\bfecha\b/i.test(v))) partes.push(`Fecha: ${e.fecha}.`);
+        if (!partes.length) return false;
+        let idx = 0;
+        for (const anc of [p.edad ? `Edad: ${p.edad}.` : '', `Paciente: ${p.nombre}.`]) {
+            if (anc && v.includes(anc)) { idx = v.indexOf(anc) + anc.length; break; }
+        }
+        ta.value = v.slice(0, idx) + (idx ? ' ' : '') + partes.join(' ') + (idx ? '' : ' ') + v.slice(idx);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+    }
+
+    /** Inserta cuando no se está dictando (para no pisar el texto que va llegando del motor de voz). */
+    function insertarCuandoSePueda(rec, p) {
+        const esActivo = () => actual === rec && activo && activo.key === rec.key && activo.pid === p.id;
+        let intentos = 0;
+        const tick = () => {
+            if (!esActivo()) return;
+            if (dictando()) { if (++intentos < 200) setTimeout(tick, 1500); return; }
+            insertarEtiquetaLote(p, false);
+        };
+        tick();
+    }
+
+    async function leerEtiquetaPaciente(rec, p, imgs, files) {
+        const id = rec.key + ':' + p.id;
+        if (p.etiquetaLeida) { if (p.etiqueta) insertarCuandoSePueda(rec, p); return; }
+        if (!window.GTXEtiqueta || leyendoEtq.has(id)) return;
+        const visible = () => actual === rec && activo && activo.key === rec.key && activo.pid === p.id;
+        leyendoEtq.add(id);
+        try {
+            if (visible()) toast('Leyendo etiqueta de la orden…', 'info', 2500);
+            if (!files || !files.length) files = await bajarImagenes(imgs);
+            const e = files.length ? await window.GTXEtiqueta.leer(files) : null;
+            p.etiquetaLeida = true;
+            p.etiqueta = e ? { doctor: e.doctor || '', fecha: e.fecha || '' } : null;
+            await dbPut(rec);
+            if (!visible()) return;
+            renderChip();
+            if (!e) { toast(`No encontré etiqueta con Dr(a). y fecha en las imágenes de ${p.nombre}.`, 'info', 5000); return; }
+            toast(`Etiqueta leída: ${[e.doctor ? 'Dr(a). ' + e.doctor : '', e.fecha].filter(Boolean).join(' · ')}`, 'ok', 5000);
+            insertarCuandoSePueda(rec, p);
+        } catch (err) {
+            console.warn('Etiqueta de la orden:', err);
+            if (visible()) toast('No se pudo leer la etiqueta de la orden: ' + (err.message || err), 'warn', 7000);
+        } finally { leyendoEtq.delete(id); }
     }
 
     function siguiente() {
@@ -1212,6 +1282,7 @@
             </div>
             ${p.estado === 'informado' ? '<span class="done">Informado ✓</span>' : p.estado === 'previo' ? '<span class="done">Ya informado antes ✓</span>' : ''}
             <button data-lc="datos" title="Escribir nombre, edad y estudio al inicio del dictado">Insertar datos</button>
+            ${p.etiqueta && (p.etiqueta.doctor || p.etiqueta.fecha) ? `<button data-lc="etq" title="Agregar al dictado lo leído en la etiqueta: ${esc([p.etiqueta.doctor ? 'Dr(a). ' + p.etiqueta.doctor : '', p.etiqueta.fecha].filter(Boolean).join(' · '))}">Dr(a). y fecha</button>` : ''}
             <button data-lc="tablero" title="Ver las imágenes de este paciente"><i data-lucide="layout-panel-left"></i></button>
             <button data-lc="lista" title="Lista del lote"><i data-lucide="list"></i> ${nInf}/${porInformar}</button>
             <button data-lc="sig" title="Siguiente paciente pendiente">Siguiente <i data-lucide="chevron-right"></i></button>
@@ -1235,9 +1306,14 @@
         } else if (a === 'datos' && p) {
             const ta = document.getElementById('transcription');
             if (!ta) return;
-            if (ta.value.includes(p.nombre)) { toast('Los datos del paciente ya están en el texto.', 'info'); return; }
+            if (ta.value.includes(p.nombre)) {
+                if (!insertarEtiquetaLote(p, false)) toast('Los datos del paciente ya están en el texto.', 'info');
+                return;
+            }
             ta.value = textoDatos(p) + ta.value;
             ta.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (a === 'etq' && p) {
+            if (!insertarEtiquetaLote(p, true)) toast('El Dr(a). y la fecha ya están en el texto.', 'info', 3000);
         }
     }
 
