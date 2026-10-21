@@ -314,6 +314,68 @@
         renderChip();
     }
 
+    // ---------- Etiqueta de la orden (Dr(a). y fecha leídos con visión) ----------
+    // Algunas órdenes traen un timbre con nombre / RUN / FN / Rx / Dr(a). / fecha. Al abrir la orden se lee
+    // en segundo plano (etiqueta.js) y el Dr(a). y la fecha se anteponen al dictado, como el nombre del paciente.
+    const ETQ_KEY = 'gtx_etiquetas';   // { threadId: { doctor, fecha } } (últimas 40 órdenes)
+    let etiquetas = {};
+    try { etiquetas = JSON.parse(safeGet(ETQ_KEY) || '{}') || {}; } catch (e) { etiquetas = {}; }
+    const sinEtiqueta = new Set();     // órdenes ya leídas sin etiqueta (solo esta sesión)
+    const leyendoEtq = new Set();
+
+    function guardarEtiqueta(threadId, e) {
+        etiquetas[threadId] = { doctor: e.doctor || '', fecha: e.fecha || '' };
+        const ks = Object.keys(etiquetas);
+        if (ks.length > 40) ks.slice(0, ks.length - 40).forEach(k => delete etiquetas[k]);
+        safeSet(ETQ_KEY, JSON.stringify(etiquetas));
+    }
+
+    /** Antepone "Dr(a). X. Fecha: D de mes del AAAA." al dictado (después de "Paciente: …" si está). forzar=true ignora lo ya dictado. */
+    function insertarEtiqueta(threadId, forzar) {
+        const e = etiquetas[threadId];
+        const ta = document.getElementById('transcription');
+        if (!e || !ta) return false;
+        const v = ta.value;
+        const partes = [];
+        if (e.doctor && !v.includes(e.doctor) && (forzar || !/\b(dr\(a\)|dra?|doctora?)\b/i.test(v))) partes.push(`Dr(a). ${e.doctor}.`);
+        if (e.fecha && !v.includes(e.fecha) && (forzar || !/\bfecha\b/i.test(v))) partes.push(`Fecha: ${e.fecha}.`);
+        if (!partes.length) return false;
+        const pref = active && active.patient ? `Paciente: ${active.patient}. ` : '';
+        const idx = pref && v.startsWith(pref) ? pref.length : 0;
+        ta.value = v.slice(0, idx) + partes.join(' ') + ' ' + v.slice(idx);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+    }
+
+    async function leerEtiquetaOrden(threadId, files) {
+        if (!window.GTXEtiqueta || !files || !files.length) return;
+        if (leyendoEtq.has(threadId)) return;
+        try {
+            if (!etiquetas[threadId]) {
+                if (sinEtiqueta.has(threadId)) return;
+                leyendoEtq.add(threadId);
+                const e = await window.GTXEtiqueta.leer(files);
+                if (!e) { sinEtiqueta.add(threadId); return; }
+                guardarEtiqueta(threadId, e);
+                if (active && active.threadId === threadId) {
+                    renderChip();
+                    toast(`Etiqueta leída: ${[e.doctor ? 'Dr(a). ' + e.doctor : '', e.fecha].filter(Boolean).join(' · ')}`, 'ok', 5000);
+                }
+            }
+            if (active && active.threadId === threadId) insertarEtiqueta(threadId, false);
+        } catch (err) {
+            console.warn('Etiqueta de la orden:', err);
+            if (!/falta la clave/i.test(String(err && err.message))) toast('No se pudo leer la etiqueta de la orden: ' + (err.message || err), 'warn', 6000);
+        } finally { leyendoEtq.delete(threadId); }
+    }
+
+    /** Baja las imágenes de la orden y, en segundo plano, lee su etiqueta. */
+    async function bajarImagenes(threadId) {
+        const files = await downloadImages(threadId);
+        leerEtiquetaOrden(threadId, files);
+        return files;
+    }
+
     function senderTemplates() {
         try { return JSON.parse(safeGet(SENDER_TPL_KEY) || '{}') || {}; } catch (e) { return {}; }
     }
@@ -344,7 +406,7 @@
         if (window.GTXWorkstation) {
             toast('Abriendo orden y bajando imágenes…', 'info', 2500);
             try {
-                const n = await window.GTXWorkstation.openBoard('order:' + o.threadId, label, () => downloadImages(o.threadId));
+                const n = await window.GTXWorkstation.openBoard('order:' + o.threadId, label, () => bajarImagenes(o.threadId));
                 if (n) toast(`${n} imagen(es) cargadas en el tablero${usedTpl ? ' · plantilla del remitente seleccionada' : ''}`, 'ok');
                 else if (usedTpl) toast('Plantilla del remitente seleccionada', 'ok');
             } catch (e) {
@@ -506,7 +568,9 @@
                     ta.dispatchEvent(new Event('input', { bubbles: true }));
                 }
             } else if (act.dataset.chip === 'board' && active && window.GTXWorkstation) {
-                window.GTXWorkstation.openBoard('order:' + active.threadId, (active.patient || active.subject) + ' — ' + active.fromName, () => downloadImages(active.threadId));
+                window.GTXWorkstation.openBoard('order:' + active.threadId, (active.patient || active.subject) + ' — ' + active.fromName, () => bajarImagenes(active.threadId));
+            } else if (act.dataset.chip === 'etq' && active) {
+                if (!insertarEtiqueta(active.threadId, true)) toast('El Dr(a). y la fecha ya están en el dictado.', 'info', 3000);
             }
         });
         renderChip();
@@ -524,6 +588,7 @@
                 <div class="chip-sub">${esc(active.fromName)} · ${esc(active.subject)}</div>
             </div>
             ${active.patient ? '<button data-chip="name" title="Escribir el nombre del paciente al inicio del dictado">Insertar nombre</button>' : ''}
+            ${etiquetas[active.threadId] && (etiquetas[active.threadId].doctor || etiquetas[active.threadId].fecha) ? '<button data-chip="etq" title="Escribir al inicio del dictado el Dr(a). y la fecha leídos de la etiqueta de la orden">Insertar Dr(a). y fecha</button>' : ''}
             <button data-chip="board" title="Ver las imágenes de esta orden en el tablero"><i data-lucide="layout-panel-left"></i></button>
             <button data-chip="close" title="Cerrar esta orden (el botón Gmail volverá a buscar por nombre)"><i data-lucide="x"></i></button>`;
         if (window.lucide) window.lucide.createIcons({ root: chipEl });
