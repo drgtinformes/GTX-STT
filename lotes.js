@@ -370,11 +370,25 @@
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         return bytes;
     };
+    /** Código HTTP de un error de gapi (401 = token vencido). */
+    const statusDe = (e) => e && (e.status || (e.result && e.result.error && e.result.error.code));
+    /** Token de Gmail vencido o revocado: se borra para que el próximo intento pida iniciar sesión. */
+    function errorSesion(e) {
+        const st = statusDe(e);
+        if (st !== 401 && st !== 403) return null;
+        safeDel('gmail_access_token');
+        try { gapi.client.setToken(null); } catch (x) { /* noop */ }
+        const err = new Error('la sesión de Gmail expiró. Presiona el botón del tablero en la barra del lote para volver a iniciar sesión (drgtinformes@gmail.com)');
+        err.sesion = true;
+        return err;
+    }
     async function bajar(a) {
         const get = (attId) => gapi.client.gmail.users.messages.attachments.get({ userId: 'me', messageId: a.msgId, id: attId });
         let r;
         try { r = await get(a.attId); }
         catch (e) {
+            const es = errorSesion(e);
+            if (es) throw es;
             // Gmail puede cambiar el id del adjunto: se vuelve a leer el mensaje
             const m = (await gapi.client.gmail.users.messages.get({ userId: 'me', id: a.msgId })).result;
             const p = walk(m.payload, []).find(x => x.filename === a.filename);
@@ -389,18 +403,34 @@
         const ext = (a.filename.split('.').pop() || '').toLowerCase();
         return { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', avif: 'image/avif', pdf: 'application/pdf' }[ext] || 'application/octet-stream';
     }
+    /**
+     * Baja las imágenes en paralelo. Antes los errores se tragaban en silencio: con el token de Gmail
+     * vencido (dura 1 hora) el tablero quedaba vacío sin ningún aviso. Ahora, si no baja ninguna,
+     * se lanza el error para que se muestre; si bajan algunas, se avisa cuántas faltaron.
+     */
     async function bajarImagenes(lista) {
         const files = new Array(lista.length);
+        const errores = [];
         let i = 0;
         const worker = async () => {
             while (i < lista.length) {
                 const k = i++;
                 try { files[k] = new File([await bajar(lista[k])], lista[k].filename, { type: mimeDe(lista[k]) }); }
-                catch (e) { console.error('No se pudo bajar', lista[k].filename, e); }
+                catch (e) {
+                    console.error('No se pudo bajar', lista[k].filename, e);
+                    errores.push(e);
+                    if (e && e.sesion) i = lista.length;   // sin sesión no tiene sentido seguir intentando
+                }
             }
         };
         await Promise.all([worker(), worker(), worker()]);
-        return files.filter(Boolean);
+        const ok = files.filter(Boolean);
+        if (errores.length) {
+            const e0 = errores.find(e => e && e.sesion) || errores[0];
+            if (!ok.length) throw (e0 instanceof Error ? e0 : new Error(String((e0 && (e0.message || (e0.result && e0.result.error && e0.result.error.message))) || e0)));
+            toast(`No se pudieron bajar ${lista.length - ok.length} de ${lista.length} imagen(es)` + (e0 && e0.sesion ? ': ' + e0.message : '.'), 'warn', 8000);
+        }
+        return ok;
     }
 
     // =====================================================================
@@ -522,6 +552,13 @@
 
         const imgs = p.archivos.filter(a => a.tipo === 'img');
         const rec = actual;
+        // El token de Gmail dura 1 hora y solo se renovaba al abrir el lote: pasada la hora,
+        // los pacientes siguientes quedaban sin imágenes. Se renueva aquí (sigue siendo parte
+        // del clic, así el navegador no bloquea la ventana de Google si hay que iniciar sesión).
+        if (imgs.length) {
+            try { await asegurarGmail(); }
+            catch (e) { console.warn('Gmail:', e); toast('No se pudo iniciar sesión en Gmail para bajar las imágenes: ' + (e.message || e.error || e), 'error', 8000); }
+        }
         if (window.GTXWorkstation && imgs.length) {
             let bajadas = null;
             try {
@@ -590,7 +627,8 @@
         try {
             if (visible()) toast('Leyendo etiqueta de la orden…', 'info', 2500);
             if (!files || !files.length) files = await bajarImagenes(imgs);
-            const e = files.length ? await window.GTXEtiqueta.leer(files) : null;
+            if (!files.length) return;   // no se pudo bajar nada: no marcar como leída (se reintenta al volver a abrir)
+            const e = await window.GTXEtiqueta.leer(files);
             p.etiquetaLeida = true;
             p.etiqueta = e ? { doctor: e.doctor || '', fecha: e.fecha || '' } : null;
             await dbPut(rec);
@@ -601,7 +639,7 @@
             insertarCuandoSePueda(rec, p);
         } catch (err) {
             console.warn('Etiqueta de la orden:', err);
-            if (visible()) toast('No se pudo leer la etiqueta de la orden: ' + (err.message || err), 'warn', 7000);
+            if (visible() && !(err && err.sesion)) toast('No se pudo leer la etiqueta de la orden: ' + (err.message || err), 'warn', 7000);
         } finally { leyendoEtq.delete(id); }
     }
 
@@ -1302,7 +1340,21 @@
         else if (a === 'sig') siguiente();
         else if (a === 'tablero' && p) {
             const imgs = p.archivos.filter(x => x.tipo === 'img');
-            if (window.GTXWorkstation) window.GTXWorkstation.openBoard('lote:' + actual.key + ':' + p.id, p.nombre + ' — ' + actual.asunto, () => bajarImagenes(imgs));
+            const rec = actual;
+            if (!window.GTXWorkstation) return;
+            (async () => {
+                let bajadas = null;
+                try {
+                    if (imgs.length) await asegurarGmail();   // renueva la sesión si venció (dentro del clic)
+                    const n = await window.GTXWorkstation.openBoard('lote:' + rec.key + ':' + p.id, p.nombre + ' — ' + rec.asunto,
+                        () => bajarImagenes(imgs).then(f => (bajadas = f)));
+                    if (n) toast(`${n} imagen(es) en el tablero`, 'ok', 2500);
+                } catch (e) {
+                    console.error(e);
+                    toast('No se pudieron bajar las imágenes: ' + (e.message || e.error || e), 'error', 7000);
+                }
+                if (imgs.length && !p.etiquetaLeida) leerEtiquetaPaciente(rec, p, imgs, bajadas);
+            })();
         } else if (a === 'datos' && p) {
             const ta = document.getElementById('transcription');
             if (!ta) return;
