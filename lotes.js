@@ -584,7 +584,7 @@
     // =====================================================================
     // Etiqueta de la orden: timbre con Nombre / RUN / FN / Rx / Dr(a). / fecha (lectura con visión, etiqueta.js)
     // =====================================================================
-    const leyendoEtq = new Set();
+    const leyendoEtq = new Map();   // id -> promesa de la lectura en curso
     const dictando = () => { try { return typeof isRecording !== 'undefined' && !!isRecording; } catch (e) { return false; } };
 
     /** Agrega "Dr(a). X. Fecha: …" al dictado, justo después de "Edad: …" (o de "Paciente: …"). forzar ignora lo ya dictado. */
@@ -606,41 +606,100 @@
         return true;
     }
 
+    /** ¿Este paciente sigue siendo el activo? (por clave: el lote pudo haberse vuelto a abrir y ser otro objeto) */
+    const esPacienteActivo = (key, pid) => !!(actual && activo && actual.key === key && activo.key === key && activo.pid === pid);
+    /** El objeto vigente del paciente (si el lote se volvió a abrir, el de `actual`). */
+    const pacienteVigente = (key, p) => (actual && actual.key === key && actual.pacientes.find(x => x.id === p.id)) || p;
+
     /** Inserta cuando no se está dictando (para no pisar el texto que va llegando del motor de voz). */
-    function insertarCuandoSePueda(rec, p) {
-        const esActivo = () => actual === rec && activo && activo.key === rec.key && activo.pid === p.id;
+    function insertarCuandoSePueda(rec, p, forzar) {
         let intentos = 0;
         const tick = () => {
-            if (!esActivo()) return;
+            if (!esPacienteActivo(rec.key, p.id)) return;
             if (dictando()) { if (++intentos < 200) setTimeout(tick, 1500); return; }
-            insertarEtiquetaLote(p, false);
+            insertarEtiquetaLote(pacienteVigente(rec.key, p), !!forzar);
         };
         tick();
     }
 
-    async function leerEtiquetaPaciente(rec, p, imgs, files) {
+    /**
+     * Lee la etiqueta de la orden del paciente (Dr(a). y fecha) y la guarda en el lote.
+     * - Automático (al abrir el paciente): una sola lectura; si una lectura anterior no encontró nada
+     *   (p. ej. porque las imágenes no bajaron), se reintenta una vez por sesión.
+     * - opts.forzar (botón "Insertar datos"): vuelve a leer si no hay etiqueta guardada.
+     * - opts.manual: no inserta solo (lo hace quien llama) y muestra todos los errores.
+     * Devuelve la etiqueta ({ doctor, fecha }) o null.
+     */
+    const reintentadas = new Set();
+    function leerEtiquetaPaciente(rec, p, imgs, files, opts) {
+        opts = opts || {};
         const id = rec.key + ':' + p.id;
-        if (p.etiquetaLeida) { if (p.etiqueta) insertarCuandoSePueda(rec, p); return; }
-        if (!window.GTXEtiqueta || leyendoEtq.has(id)) return;
-        const visible = () => actual === rec && activo && activo.key === rec.key && activo.pid === p.id;
-        leyendoEtq.add(id);
-        try {
-            if (visible()) toast('Leyendo etiqueta de la orden…', 'info', 2500);
-            if (!files || !files.length) files = await bajarImagenes(imgs);
-            if (!files.length) return;   // no se pudo bajar nada: no marcar como leída (se reintenta al volver a abrir)
-            const e = await window.GTXEtiqueta.leer(files);
-            p.etiquetaLeida = true;
-            p.etiqueta = e ? { doctor: e.doctor || '', fecha: e.fecha || '' } : null;
-            await dbPut(rec);
-            if (!visible()) return;
-            renderChip();
-            if (!e) { toast(`No encontré etiqueta con Dr(a). y fecha en las imágenes de ${p.nombre}.`, 'info', 5000); return; }
-            toast(`Etiqueta leída: ${[e.doctor ? 'Dr(a). ' + e.doctor : '', e.fecha].filter(Boolean).join(' · ')}`, 'ok', 5000);
-            insertarCuandoSePueda(rec, p);
-        } catch (err) {
-            console.warn('Etiqueta de la orden:', err);
-            if (visible() && !(err && err.sesion)) toast('No se pudo leer la etiqueta de la orden: ' + (err.message || err), 'warn', 7000);
-        } finally { leyendoEtq.delete(id); }
+        if (leyendoEtq.has(id)) return leyendoEtq.get(id);
+        if (p.etiqueta) {
+            if (!opts.manual) insertarCuandoSePueda(rec, p);
+            return Promise.resolve(p.etiqueta);
+        }
+        if (p.etiquetaLeida && !opts.forzar) {
+            if (reintentadas.has(id)) return Promise.resolve(null);
+            reintentadas.add(id);
+        }
+        if (!window.GTXEtiqueta || !imgs || !imgs.length) return Promise.resolve(null);
+        const visible = () => esPacienteActivo(rec.key, p.id);
+        const pr = (async () => {
+            try {
+                if (visible()) toast('Leyendo la orden (Dr(a). y fecha)…', 'info', 3000);
+                if (!files || !files.length) files = await bajarImagenes(imgs);
+                if (!files.length) return null;   // no se pudo bajar nada: no marcar como leída
+                const e = await window.GTXEtiqueta.leer(files);
+                const etq = e ? { doctor: e.doctor || '', fecha: e.fecha || '' } : null;
+                // Guardar en el registro vigente del lote (si se volvió a abrir, `actual` es otro objeto)
+                const target = (actual && actual.key === rec.key) ? actual : rec;
+                for (const x of new Set([p, pacienteVigente(rec.key, p)])) { x.etiquetaLeida = true; x.etiqueta = etq; }
+                await dbPut(target);
+                if (!visible()) return etq;
+                renderChip();
+                if (!etq) { toast(`No encontré etiqueta con Dr(a). y fecha en las imágenes de ${p.nombre}.`, 'info', 5000); return null; }
+                toast(`Orden leída: ${[etq.doctor ? 'Dr(a). ' + etq.doctor : '', etq.fecha].filter(Boolean).join(' · ')}`, 'ok', 5000);
+                if (!opts.manual) insertarCuandoSePueda(rec, p);
+                return etq;
+            } catch (err) {
+                console.warn('Etiqueta de la orden:', err);
+                if (visible() && (opts.manual || !(err && err.sesion))) toast('No se pudo leer la orden: ' + (err.message || err), 'warn', 7000);
+                return null;
+            } finally { leyendoEtq.delete(id); }
+        })();
+        leyendoEtq.set(id, pr);
+        return pr;
+    }
+
+    /**
+     * Botón "Insertar datos": escribe nombre/edad/estudio si faltan y agrega el Dr(a). y la fecha
+     * de la orden. Si la orden todavía no se ha leído (o no se encontró nada), la lee en ese momento.
+     */
+    async function insertarDatos(p) {
+        const rec = actual;
+        const ta = document.getElementById('transcription');
+        if (!rec || !ta) return;
+        let agregado = false;
+        if (!ta.value.includes(p.nombre)) {
+            ta.value = textoDatos(p) + ta.value;          // ya incluye Dr(a). y fecha si la orden estaba leída
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            agregado = true;
+        }
+        if (p.etiqueta) {
+            if (insertarEtiquetaLote(p, true)) agregado = true;
+            if (!agregado) toast('Los datos del paciente y de la orden ya están en el texto.', 'info', 3500);
+            return;
+        }
+        const imgs = p.archivos.filter(x => x.tipo === 'img');
+        if (!imgs.length || !window.GTXEtiqueta) {
+            if (!agregado) toast(imgs.length ? 'Los datos del paciente ya están en el texto.' : `${p.nombre}: no hay imágenes de la orden para leer.`, 'info', 4000);
+            return;
+        }
+        try { await asegurarGmail(); }   // dentro del clic: si la sesión venció, Google puede pedir la cuenta
+        catch (e) { toast('No se pudo iniciar sesión en Gmail para leer la orden: ' + (e.message || e.error || e), 'error', 8000); return; }
+        const etq = await leerEtiquetaPaciente(rec, p, imgs, null, { forzar: true, manual: true });
+        if (etq) insertarCuandoSePueda(rec, p, true);
     }
 
     function siguiente() {
@@ -1319,7 +1378,7 @@
                 <div class="chip-sub">${esc(estudios(p).join(' · ') || 'Sin exámenes en el Excel')} — Lote ${esc(actual.asunto)}</div>
             </div>
             ${p.estado === 'informado' ? '<span class="done">Informado ✓</span>' : p.estado === 'previo' ? '<span class="done">Ya informado antes ✓</span>' : ''}
-            <button data-lc="datos" title="Escribir nombre, edad y estudio al inicio del dictado">Insertar datos</button>
+            <button data-lc="datos" title="Escribir nombre, edad y estudio, y leer la orden para agregar Dr(a). y fecha si faltan">Insertar datos</button>
             ${p.etiqueta && (p.etiqueta.doctor || p.etiqueta.fecha) ? `<button data-lc="etq" title="Agregar al dictado lo leído en la etiqueta: ${esc([p.etiqueta.doctor ? 'Dr(a). ' + p.etiqueta.doctor : '', p.etiqueta.fecha].filter(Boolean).join(' · '))}">Dr(a). y fecha</button>` : ''}
             <button data-lc="tablero" title="Ver las imágenes de este paciente"><i data-lucide="layout-panel-left"></i></button>
             <button data-lc="lista" title="Lista del lote"><i data-lucide="list"></i> ${nInf}/${porInformar}</button>
@@ -1353,17 +1412,10 @@
                     console.error(e);
                     toast('No se pudieron bajar las imágenes: ' + (e.message || e.error || e), 'error', 7000);
                 }
-                if (imgs.length && !p.etiquetaLeida) leerEtiquetaPaciente(rec, p, imgs, bajadas);
+                if (imgs.length && !p.etiqueta) leerEtiquetaPaciente(rec, p, imgs, bajadas);
             })();
         } else if (a === 'datos' && p) {
-            const ta = document.getElementById('transcription');
-            if (!ta) return;
-            if (ta.value.includes(p.nombre)) {
-                if (!insertarEtiquetaLote(p, false)) toast('Los datos del paciente ya están en el texto.', 'info');
-                return;
-            }
-            ta.value = textoDatos(p) + ta.value;
-            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            insertarDatos(p);
         } else if (a === 'etq' && p) {
             if (!insertarEtiquetaLote(p, true)) toast('El Dr(a). y la fecha ya están en el texto.', 'info', 3000);
         }
