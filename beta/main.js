@@ -310,6 +310,10 @@ class TemplateManager {
     constructor() {
         this.defaults = {
             'QVA': { name: 'Centro Radiológico QVA', base64: templatesBase64.QVA, isDefault: true },
+            // Sucursal Quillota: misma hoja que QVA. "3D" = Cone Beam con el bloque técnico del
+            // equipo Planmeca (ver PLANTILLAS_CON_BLOQUE_CBCT); "2D" = estudios sin CBCT.
+            'QUILLOTA_3D': { name: 'QUILLOTA 3D', base64: templatesBase64.QVA, isDefault: true },
+            'QUILLOTA_2D': { name: 'QUILLOTA 2D', base64: templatesBase64.QVA, isDefault: true },
             'TALCA': { name: 'Centro Radiológico TALCA', base64: templatesBase64.TALCA, isDefault: true },
             'PLANTILLA_MP': { name: 'PLANTILLA MP', base64: templatesBase64.PLANTILLA_MP, isDefault: true },
             'CENTALIS': { name: 'Centro Radiológico CENTALIS', base64: templatesBase64.CENTALIS, isDefault: true },
@@ -870,7 +874,9 @@ function toggleRecording() {
     const isRealtimeWhisper = engineSelect && engineSelect.value === 'realtime-whisper';
     const isDeepgram = engineSelect && engineSelect.value === 'deepgram';
     const isSoniox = engineSelect && engineSelect.value === 'soniox';
-    const isSpeechmatics = engineSelect && engineSelect.value === 'speechmatics';
+    const isSpeechmatics = engineSelect && (engineSelect.value === 'speechmatics' || engineSelect.value === 'speechmatics-oak');
+    const isAssemblyAI = engineSelect && engineSelect.value === 'assemblyai';
+    const isGeminiLive = engineSelect && engineSelect.value === 'gemini-live';
 
     if (isRecording) {
         if (isWhisper && mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -883,6 +889,10 @@ function toggleRecording() {
             stopSonioxRecording();
         } else if (isSpeechmatics) {
             stopSpeechmaticsRecording();
+        } else if (isAssemblyAI) {
+            stopAssemblyAIRecording();
+        } else if (isGeminiLive) {
+            stopGeminiLiveRecording();
         } else if (!isWhisper && !isRealtimeWhisper && !isDeepgram && !isSoniox && !isSpeechmatics) {
             isRecording = false;
             recognition.stop();
@@ -909,6 +919,10 @@ function toggleRecording() {
             startSonioxRecording();
         } else if (isSpeechmatics) {
             startSpeechmaticsRecording();
+        } else if (isAssemblyAI) {
+            startAssemblyAIRecording();
+        } else if (isGeminiLive) {
+            startGeminiLiveRecording();
         } else {
             try {
                 recognition.start();
@@ -1168,30 +1182,75 @@ let deepgramStream = null;
 let deepgramSource = null;
 let deepgramKeepAlive = null;
 
-// Términos base maxilofaciales que siempre reforzamos (además del diccionario).
-const DEEPGRAM_BASE_KEYTERMS = [
-    "cóndilo mandibular", "apófisis coronoides", "seno maxilar", "conducto dentario inferior",
-    "reabsorción radicular", "reabsorción ósea", "periápice", "periapical", "radiolúcido",
-    "radiopaco", "cortical ósea", "hueso trabecular", "CBCT", "ATM", "tercer molar",
-    "quiste dentígero", "lesión periapical", "tabique nasal", "fosa nasal", "hiperostosis",
-    "furca", "ligamento periodontal", "lámina dura", "reborde alveolar", "cóndilo"
+// === VOCABULARIO SUGERIDO A LOS MOTORES DE VOZ (oct-2026) ====================
+// Lista de términos que se le entrega a cada motor AL EMPEZAR el dictado para que,
+// ante un sonido ambiguo, prefiera el término clínico (no reemplaza nada a la fuerza;
+// eso lo hace applyCorrections después). Se escriben TAL COMO deben salir (tildes,
+// mayúsculas en siglas): los motores copian el casing del término sugerido.
+// Orden de prioridad: 1) núcleo clínico, 2) términos protegidos del usuario,
+// 3) destinos de reglas SEGURAS del diccionario. Cada motor recibe el tope que admite.
+const STT_TERMINOS_BASE = [
+    // Núcleo (los que más se confunden con palabras comunes van primero)
+    "agenesia", "atrición", "apiñamiento", "basilar", "reabsorción radicular", "reabsorción ósea",
+    "periápice", "periapical", "radiolúcido", "radiopaco", "radiolucidez", "radiopacidad",
+    "lámina dura", "ligamento periodontal", "furca", "lesión periapical", "periodontitis apical",
+    "quiste dentígero", "quiste radicular", "odontoma", "hipercementosis", "osteítis condensante",
+    "dilaceración radicular", "taurodontismo", "supernumerario", "mesiodens", "germen dentario",
+    "rizogénesis", "estadio de Nolla", "erupción", "retenido", "tercer molar",
+    // Anatomía
+    "cóndilo mandibular", "cóndilo", "apófisis coronoides", "apófisis estiloides", "eminencia articular",
+    "cavidad glenoidea", "conducto dentario inferior", "agujero mentoniano", "canal incisivo",
+    "espina nasal anterior", "seno maxilar", "piso de seno", "neumatización", "engrosamiento mucoso",
+    "tabique nasal", "fosa nasal", "cornete", "tuberosidad del maxilar", "reborde alveolar",
+    "cresta ósea", "cortical ósea", "hueso trabecular", "rama mandibular", "sínfisis mandibular",
+    "hueso hioides", "vértebras cervicales",
+    // Tratamientos y hallazgos
+    "obturación endodóntica", "tratamiento de conductos", "perno muñón", "implante oseointegrado",
+    "hiperostosis", "osteofito", "esclerosis subcondral", "remodelación condilar", "abfracción",
+    // Estudios y siglas
+    "CBCT", "ATM", "FOV", "vóxel", "telerradiografía", "panorámica", "bite-wing", "Cone Beam"
 ];
+// Compatibilidad: algunos módulos/notas antiguas usan este nombre.
+const DEEPGRAM_BASE_KEYTERMS = STT_TERMINOS_BASE;
 
-// Lista de keyterms = base + valores del diccionario del usuario (dedupe + tope).
-function buildDeepgramKeyterms() {
-    const set = new Set();
-    DEEPGRAM_BASE_KEYTERMS.forEach(t => set.add(t.toLowerCase()));
+function _sttTerminoValido(t) {
+    return t.length >= 3 && t.length <= 40 && /[a-záéíóúñ]/i.test(t)
+        && !/\d/.test(t)                      // nada de "pieza 2.6": los números no se sugieren
+        && t.split(/\s+/).length <= 4;
+}
+
+/**
+ * Términos para los motores de voz, sin duplicados (ignorando mayúsculas/tildes) y con tope.
+ * Del diccionario solo entran: términos PROTEGIDOS (entrada idéntica, ej. "ortográfica")
+ * y destinos de reglas que pasan esReglaDiccionarioSegura (mismo filtro que usa la IA),
+ * para que una regla vieja o dudosa no le "sugiera" palabras equivocadas al motor.
+ */
+function buildSttTerms(limite = 80) {
+    const vistos = new Set(), out = [];
+    const add = (t) => {
+        t = String(t || '').trim().replace(/\s+/g, ' ');
+        if (!_sttTerminoValido(t)) return;
+        const k = _normDict(t);
+        if (vistos.has(k)) return;
+        vistos.add(k); out.push(t);
+    };
+    STT_TERMINOS_BASE.forEach(add);
     if (typeof correctionsDict === 'object' && correctionsDict) {
-        Object.values(correctionsDict).forEach(v => {
-            if (typeof v !== 'string') return;
-            const term = v.trim().toLowerCase();
-            // Solo términos con letras, 3–40 chars y máx 3 palabras (evita frases largas).
-            if (term.length >= 3 && term.length <= 40 && /[a-záéíóúñ]/.test(term) && term.split(/\s+/).length <= 3) {
-                set.add(term);
-            }
-        });
+        const protegidos = [], reglas = [];
+        for (const [wrong, right] of Object.entries(correctionsDict)) {
+            if (typeof right !== 'string' || typeof wrong !== 'string') continue;
+            if (_normDict(wrong) === _normDict(right)) { protegidos.push(right); continue; }
+            if (esReglaDiccionarioSegura(wrong, right)) reglas.push(right);
+        }
+        protegidos.forEach(add);
+        reglas.forEach(add);
     }
-    return Array.from(set).slice(0, 80); // muy por debajo del tope de 500 tokens
+    return out.slice(0, limite);
+}
+
+// Nombre histórico (Deepgram / OpenAI / comparador): 80 términos, bajo el tope de 500 tokens de Deepgram.
+function buildDeepgramKeyterms() {
+    return buildSttTerms(80);
 }
 
 // Float32 [-1,1] -> PCM 16-bit little-endian (linear16 que espera Deepgram).
@@ -1492,6 +1551,26 @@ let sonioxBaseTranscript = '';
 let sonioxSessionFinal = '';
 
 // Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
+// Contexto de Soniox (máx. 8.000 tokens): 'general' describe el dominio (lo que más pesa
+// junto con 'terms'), 'text' da un ejemplo de cómo suena y se escribe el dictado, y 'terms'
+// lleva el vocabulario clínico (hasta 250, muy por debajo del tope).
+function buildSonioxContext() {
+    return {
+        general: [
+            { key: 'domain', value: 'Radiología maxilofacial y dental' },
+            { key: 'topic', value: 'Dictado de informe imagenológico: panorámica, CBCT (Cone Beam), periapicales, bite-wing, telerradiografía, ATM' },
+            { key: 'language', value: 'Español de Chile, terminología odontológica y radiológica' },
+            { key: 'notation', value: 'Piezas dentales en notación FDI escritas como 1.6, 3.8, 5.5 (se dictan "uno punto seis")' },
+            { key: 'speaker', value: 'Radiólogo maxilofacial dictando hallazgos' }
+        ],
+        text: 'Ejemplo de dictado: Pieza 3.8 incluida en posición mesioangulada, en relación con el conducto dentario inferior. '
+            + 'Reabsorción ósea horizontal leve generalizada. Lesión periapical radiolúcida en pieza 4.6 con tratamiento de conductos. '
+            + 'Senos maxilares neumatizados, con engrosamiento mucoso basal en el seno maxilar derecho. Agenesia de piezas 1.2 y 2.2. '
+            + 'Cóndilos mandibulares de morfología conservada.',
+        terms: buildSttTerms(250)
+    };
+}
+
 // Quita las marcas de control de Soniox (<end>, <fin>) que no son texto dictado.
 function limpiarMarcasSoniox(txt) {
     if (!txt || txt.indexOf('<') === -1) return txt;
@@ -1554,10 +1633,7 @@ async function startSonioxRecording() {
                 sample_rate: SAMPLE_RATE,
                 language_hints: ['es'],
                 enable_endpoint_detection: true,
-                context: {
-                    general: [{ key: 'domain', value: 'Radiología maxilofacial y dental (CBCT)' }],
-                    terms: buildDeepgramKeyterms()
-                }
+                context: buildSonioxContext()
             }));
 
             sonioxAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
@@ -1680,8 +1756,15 @@ async function getSpeechmaticsToken() {
 
 // Diccionario propio (additional_vocab) a partir de los mismos términos que Deepgram/Soniox.
 function buildSpeechmaticsVocab() {
-    return buildDeepgramKeyterms().map(t => ({ content: t }));
+    return buildSttTerms(150).map(t => ({ content: t }));
 }
+
+// Oak-1 (oct-2026): modelo médico multilingüe nuevo. Va con language 'multi' y AÚN no acepta
+// diccionario propio (additional_vocab). Se elige con la opción "Speechmatics Oak-1" del selector.
+function smEsOak() {
+    return !!(engineSelect && engineSelect.value === 'speechmatics-oak');
+}
+function smNombre() { return smEsOak() ? 'Speechmatics Oak-1' : 'Speechmatics Medical'; }
 
 async function startSpeechmaticsRecording(useVocab = true) {
     let token;
@@ -1706,7 +1789,7 @@ async function startSpeechmaticsRecording(useVocab = true) {
             isRecording = true;
             recordBtn.classList.add('recording');
             recordText.innerText = 'Detener Speechmatics (F2)';
-            statusText.innerText = 'Conectando (Speechmatics Medical)...';
+            statusText.innerText = 'Conectando (' + smNombre() + ')...';
             recordingPulse.classList.remove('hidden');
 
             smBaseTranscript = transcriptionArea.value || finalTranscript || '';
@@ -1723,7 +1806,15 @@ async function startSpeechmaticsRecording(useVocab = true) {
                 enable_partials: true,
                 max_delay: 3                  // 0.7–4 s: más alto = final más preciso
             };
-            if (useVocab) transcriptionConfig.additional_vocab = buildSpeechmaticsVocab();
+            if (useVocab && !smEsOak()) transcriptionConfig.additional_vocab = buildSpeechmaticsVocab();
+            if (smEsOak()) {
+                // Oak-1: sin domain ni diccionario. En el reintento (useVocab=false) va la
+                // configuración mínima por si el modelo no aceptara partials/max_delay en tiempo real.
+                for (const k of Object.keys(transcriptionConfig)) delete transcriptionConfig[k];
+                transcriptionConfig.model = 'oak-1';
+                transcriptionConfig.language = 'multi';
+                if (useVocab) { transcriptionConfig.enable_partials = true; transcriptionConfig.max_delay = 3; }
+            }
 
             ws.send(JSON.stringify({
                 message: 'StartRecognition',
@@ -1753,7 +1844,7 @@ async function startSpeechmaticsRecording(useVocab = true) {
             switch (data.message) {
                 case 'RecognitionStarted':
                     smStarted = true;
-                    statusText.innerText = 'Grabando (Speechmatics Medical)...';
+                    statusText.innerText = 'Grabando (' + smNombre() + ')...';
                     smPendingAudio.forEach(buf => { ws.send(buf); smSeqNo++; });
                     smPendingAudio = [];
                     return;
@@ -1848,6 +1939,446 @@ function stopSpeechmaticsRecording(immediate = false) {
     }
 }
 
+// =========================================================================
+// === MOTOR ASSEMBLYAI (Universal-3.6 Pro Realtime · Modo médico) =========
+// =========================================================================
+// Modelo general + domain "medical-v1" (modo médico en EN/ES/DE/FR, +US$0,15/h).
+// Auth en navegador: token temporal de un solo uso en la URL (?token=...), emitido por
+// assemblyai-token-worker.js. Envía PCM 16 kHz en binario (cada trozo de 50–1000 ms).
+// Mensajes: 'Begin' → 'Turn' (transcript del turno en curso; end_of_turn = turno cerrado)
+// → 'Termination'. Para cerrar se manda {type:'Terminate'}.
+const AAI_WS_URL = 'wss://streaming.assemblyai.com/v3/ws';
+const AAI_MODEL = 'universal-3-6-pro';
+const AAI_PROMPT = 'Dictado médico en español de Chile de un radiólogo maxilofacial (informe de panorámica, CBCT, '
+    + 'periapicales, ATM). Transcribe literalmente, con terminología odontológica y radiológica. '
+    + 'Los números de pieza dental van en notación FDI con punto: 1.6, 3.8, 5.5.';
+let aaiWs = null;
+let aaiAudioContext = null;
+let aaiProcessor = null;
+let aaiStream = null;
+let aaiSource = null;
+let aaiStarted = false;
+let aaiPendingAudio = [];
+let aaiSessionFinal = '';
+let aaiPendiente = null;          // turno cerrado aún sin formato: { order, text }
+let aaiComprometidos = new Set(); // turn_order ya agregados al texto
+let aaiStopTimer = null;
+
+async function getAssemblyAIToken() {
+    const proxyUrl = getProxyUrl('assemblyai_proxy_url');
+    if (!proxyUrl) throw new Error('Configura la URL del proxy AssemblyAI en Configuración (despliega assemblyai-token-worker.js en Cloudflare).');
+    assertProxyUrl('AssemblyAI', proxyUrl);
+    const resp = await fetch(proxyUrl, { method: 'POST' });
+    if (!resp.ok) throw proxyError('AssemblyAI', resp, proxyUrl);
+    const data = await resp.json();
+    if (!data.token) throw new Error('El proxy no devolvió token.');
+    return data.token;
+}
+
+// nivel 0 = completo (modo médico + términos + prompt); 1 = sin prompt (beta); 2 = solo modo médico.
+function buildAssemblyAIUrl(token, nivel) {
+    const p = new URLSearchParams();
+    p.set('speech_model', AAI_MODEL);
+    p.set('sample_rate', '16000');
+    p.set('encoding', 'pcm_s16le');
+    p.set('domain', 'medical-v1');
+    if (nivel <= 1) {
+        // Máx. 100 términos de hasta 50 caracteres.
+        const terms = buildSttTerms(100).filter(t => t.length <= 50);
+        p.set('keyterms_prompt', JSON.stringify(terms));
+    }
+    if (nivel === 0) p.set('prompt', AAI_PROMPT);
+    p.set('token', token);
+    return AAI_WS_URL + '?' + p.toString();
+}
+
+function _aaiComprometer(order, text) {
+    if (aaiComprometidos.has(order)) return;
+    aaiComprometidos.add(order);
+    const t = String(text || '').trim();
+    if (!t) return;
+    aaiSessionFinal += (aaiSessionFinal && !/\s$/.test(aaiSessionFinal) ? ' ' : '') + t;
+}
+
+async function startAssemblyAIRecording(nivel = 0) {
+    let token;
+    try {
+        token = await getAssemblyAIToken();
+    } catch (e) {
+        alert(e.message);
+        return;
+    }
+
+    try {
+        if (!aaiStream) {
+            aaiStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        const SAMPLE_RATE = 16000;
+        const ws = new WebSocket(buildAssemblyAIUrl(token, nivel));
+        aaiWs = ws;
+        ws.binaryType = 'arraybuffer';
+        let abierto = false;
+
+        ws.onopen = () => {
+            abierto = true;
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            recordText.innerText = 'Detener AssemblyAI (F2)';
+            statusText.innerText = 'Conectando (AssemblyAI Medical)...';
+            recordingPulse.classList.remove('hidden');
+
+            // En un reintento se conserva lo ya pintado (la base sigue siendo el cuadro actual).
+            const base = transcriptionArea.value || finalTranscript || '';
+            vivoIniciar(base);
+            aaiSessionFinal = '';
+            aaiPendiente = null;
+            aaiComprometidos = new Set();
+            aaiStarted = false;
+            aaiPendingAudio = [];
+
+            aaiAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            aaiSource = aaiAudioContext.createMediaStreamSource(aaiStream);
+            aaiProcessor = aaiAudioContext.createScriptProcessor(4096, 1, 1); // 256 ms por trozo
+            aaiSource.connect(aaiProcessor);
+            aaiProcessor.connect(aaiAudioContext.destination);
+
+            aaiProcessor.onaudioprocess = (e) => {
+                if (!isRecording || aaiWs !== ws || ws.readyState !== WebSocket.OPEN) return;
+                const pcm = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+                if (!aaiStarted) { aaiPendingAudio.push(pcm); return; } // se envía al recibir 'Begin'
+                ws.send(pcm);
+            };
+        };
+
+        ws.onmessage = (message) => {
+            let data;
+            try { data = JSON.parse(message.data); } catch (_) { return; }
+
+            if (data.type === 'Begin') {
+                aaiStarted = true;
+                statusText.innerText = 'Grabando (AssemblyAI Medical)...';
+                aaiPendingAudio.forEach(buf => { try { ws.send(buf); } catch (_) {} });
+                aaiPendingAudio = [];
+                return;
+            }
+
+            if (data.type === 'Turn') {
+                // Si corregiste a mano mientras grababa, tu versión pasa a ser la base.
+                if (vivoAbsorberEdicion()) { aaiSessionFinal = ''; aaiPendiente = null; }
+                // Empezó otro turno y el anterior quedó cerrado sin versión formateada: se agrega tal cual.
+                if (aaiPendiente && aaiPendiente.order !== data.turn_order) {
+                    _aaiComprometer(aaiPendiente.order, aaiPendiente.text);
+                    aaiPendiente = null;
+                }
+                const t = String(data.transcript || '').trim();
+                let interim = '';
+                if (data.end_of_turn && data.turn_is_formatted) {
+                    if (aaiPendiente && aaiPendiente.order === data.turn_order) aaiPendiente = null;
+                    _aaiComprometer(data.turn_order, t);
+                } else if (data.end_of_turn) {
+                    aaiPendiente = { order: data.turn_order, text: t }; // puede llegar su versión formateada
+                    interim = t;
+                } else if (!aaiComprometidos.has(data.turn_order)) {
+                    interim = t;
+                }
+                aaiSessionFinal = vivoPintar(aaiSessionFinal, interim);
+                return;
+            }
+
+            if (data.type === 'Termination') {
+                if (vivoAbsorberEdicion()) aaiSessionFinal = '';
+                if (aaiPendiente) { _aaiComprometer(aaiPendiente.order, aaiPendiente.text); aaiPendiente = null; }
+                aaiSessionFinal = vivoPintar(aaiSessionFinal, '');
+                if (aaiStopTimer) { clearTimeout(aaiStopTimer); aaiStopTimer = null; }
+                try { ws.close(); } catch (_) {}
+                statusText.innerText = 'Listo';
+                return;
+            }
+
+            if (data.error) {
+                console.error('AssemblyAI error:', data.error);
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.error('AssemblyAI WebSocket error:', err);
+        };
+
+        ws.onclose = (ev) => {
+            console.log('AssemblyAI WebSocket cerrado.', ev.code, ev.reason || '');
+            if (aaiWs !== ws) return;
+            // Rechazó la configuración antes de empezar: reintenta con menos opciones
+            // (el prompt está en beta; los términos podrían no aceptarse con el modo médico).
+            if (!aaiStarted && ev.code !== 1000 && nivel < 2 && (isRecording || !abierto)) {
+                console.warn('AssemblyAI: reintento con configuración más simple (nivel ' + (nivel + 1) + '). Motivo:', ev.code, ev.reason);
+                stopAssemblyAIRecording(true);
+                startAssemblyAIRecording(nivel + 1);
+                return;
+            }
+            if (!abierto && !aaiStarted) {
+                alert('No se pudo conectar con AssemblyAI (' + ev.code + (ev.reason ? ': ' + ev.reason : '') + '). Revisa el proxy, la API key y tu saldo.');
+                return;
+            }
+            if (isRecording) {
+                if (ev.code !== 1000) alert('AssemblyAI cerró la conexión (' + ev.code + (ev.reason ? ': ' + ev.reason : '') + '). Revisa el proxy y tu saldo.');
+                if (aaiPendiente) { _aaiComprometer(aaiPendiente.order, aaiPendiente.text); aaiPendiente = null; aaiSessionFinal = vivoPintar(aaiSessionFinal, ''); }
+                stopAssemblyAIRecording(true);
+            }
+        };
+
+    } catch (e) {
+        console.error('No se pudo iniciar AssemblyAI:', e);
+        alert('Error al acceder al micrófono o iniciar AssemblyAI.');
+    }
+}
+
+function stopAssemblyAIRecording(immediate = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    recordText.innerText = 'Iniciar Dictado (F2)';
+    statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando...';
+    recordingPulse.classList.add('hidden');
+
+    if (aaiProcessor) { aaiProcessor.disconnect(); aaiProcessor = null; }
+    if (aaiSource) { aaiSource.disconnect(); aaiSource = null; }
+    if (aaiAudioContext && aaiAudioContext.state !== 'closed') {
+        aaiAudioContext.close(); aaiAudioContext = null;
+    }
+
+    const ws = aaiWs;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        if (!immediate && aaiStarted) {
+            // Terminate: AssemblyAI entrega el último turno y responde 'Termination'.
+            // (La sesión se cobra mientras esté abierta, por eso se cierra apenas termina.)
+            try { ws.send(JSON.stringify({ type: 'Terminate' })); } catch (_) {}
+            if (aaiStopTimer) clearTimeout(aaiStopTimer);
+            aaiStopTimer = setTimeout(() => { try { ws.close(); } catch (_) {} statusText.innerText = 'Listo'; }, 5000);
+        } else {
+            try { ws.close(); } catch (_) {}
+            statusText.innerText = 'Listo';
+        }
+    } else {
+        statusText.innerText = 'Listo';
+    }
+}
+
+// =========================================================================
+// === MOTOR GEMINI 3.5 TRANSCRIBE LIVE (Live API · español latino) ========
+// =========================================================================
+// Usa la misma API key de Gemini del formateador (Configuración). Live API por WebSocket:
+// 1) setup (modelo + idioma es-419 + vocabulario propio) → 'setupComplete';
+// 2) audio PCM 16 kHz en base64 (realtimeInput.audio);
+// 3) llegan 'interimInputTranscription' (provisional) e 'inputTranscription' (final).
+// Cada sesión dura máx. 10 min: a los 9 min se abre otra sesión sin cortar el dictado.
+const GEMINI_LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const GEMINI_LIVE_MODEL = 'models/gemini-3.5-transcribe-live';
+const GEMINI_LIVE_ROTAR_MS = 9 * 60 * 1000;
+let gemWs = null;
+let gemAudioContext = null;
+let gemProcessor = null;
+let gemStream = null;
+let gemSource = null;
+let gemReady = false;
+let gemPendingAudio = [];
+let gemSessionFinal = '';
+let gemInterim = '';
+let gemRotarTimer = null;
+let gemConVocab = true;
+
+function _pcmToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let bin = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(bin);
+}
+
+// Une un fragmento final al acumulado. Los finales suelen ser frases completas (empiezan con
+// mayúscula o espacio); si llegara un trozo que continúa una palabra, se pega sin espacio.
+function _gemUnir(acum, frag) {
+    if (!frag) return acum;
+    if (!acum || /\s$/.test(acum) || /^\s/.test(frag)) return acum + frag;
+    if (/[.,;:!?)]$/.test(acum) || /^[A-ZÁÉÍÓÚÑ0-9¿¡(]/.test(frag)) return acum + ' ' + frag;
+    return acum + frag;
+}
+
+function _gemSetup() {
+    const cfg = { languageCodes: ['es-419'], mode: 'VERBATIM' };
+    if (gemConVocab) cfg.customVocabulary = buildSttTerms(100); // óptimo ≤100 según Google
+    return {
+        setup: {
+            model: GEMINI_LIVE_MODEL,
+            generationConfig: { responseModalities: ['TEXT'] },
+            inputAudioTranscription: cfg
+        }
+    };
+}
+
+// Abre una sesión Live. 'rotacion' = reemplaza a una sesión que está por vencer (no reinicia el texto).
+function _gemAbrirSesion(apiKey, rotacion) {
+    const ws = new WebSocket(GEMINI_LIVE_URL + '?key=' + encodeURIComponent(apiKey));
+    const anterior = gemWs;
+    gemWs = ws;
+    gemReady = false;
+    let listo = false;
+
+    ws.onopen = () => {
+        try { ws.send(JSON.stringify(_gemSetup())); } catch (_) {}
+    };
+
+    ws.onmessage = async (event) => {
+        let raw = event.data;
+        if (raw instanceof Blob) raw = await raw.text();
+        else if (raw instanceof ArrayBuffer) raw = new TextDecoder().decode(raw);
+        let data;
+        try { data = JSON.parse(raw); } catch (_) { return; }
+
+        if (data.setupComplete) {
+            listo = true;
+            if (gemWs === ws) {
+                gemReady = true;
+                statusText.innerText = 'Grabando (Gemini Transcribe Live)...';
+                gemPendingAudio.forEach(b64 => { try { ws.send(JSON.stringify({ realtimeInput: { audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } } })); } catch (_) {} });
+                gemPendingAudio = [];
+                // Sesión anterior (rotación): que entregue lo pendiente y se cierre.
+                if (anterior && anterior.readyState === WebSocket.OPEN) {
+                    try { anterior.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } })); } catch (_) {}
+                    setTimeout(() => { try { anterior.close(); } catch (_) {} }, 4000);
+                }
+                if (gemRotarTimer) clearTimeout(gemRotarTimer);
+                gemRotarTimer = setTimeout(() => { if (isRecording && gemWs === ws) _gemAbrirSesion(apiKey, true); }, GEMINI_LIVE_ROTAR_MS);
+            }
+            return;
+        }
+
+        if (data.goAway) {
+            // El servidor avisa que cerrará la sesión pronto: se abre otra de inmediato.
+            if (isRecording && gemWs === ws) _gemAbrirSesion(apiKey, true);
+            return;
+        }
+
+        const sc = data.serverContent;
+        if (!sc) return;
+        if (vivoAbsorberEdicion()) { gemSessionFinal = ''; gemInterim = ''; }
+        if (sc.inputTranscription && typeof sc.inputTranscription.text === 'string') {
+            gemSessionFinal = _gemUnir(gemSessionFinal, sc.inputTranscription.text);
+            gemInterim = '';
+        }
+        if (sc.interimInputTranscription && typeof sc.interimInputTranscription.text === 'string' && gemWs === ws) {
+            gemInterim = sc.interimInputTranscription.text;
+        }
+        gemSessionFinal = vivoPintar(gemSessionFinal, gemInterim);
+    };
+
+    ws.onerror = (err) => {
+        console.error('Gemini Live WebSocket error:', err);
+    };
+
+    ws.onclose = (ev) => {
+        console.log('Gemini Live WebSocket cerrado.', ev.code, ev.reason || '');
+        if (gemWs !== ws) return; // era una sesión anterior (rotación)
+        if (!listo && isRecording) {
+            // Rechazó el setup: reintento único sin vocabulario propio.
+            if (gemConVocab && !rotacion) {
+                console.warn('Gemini Live: reintento sin customVocabulary. Motivo:', ev.code, ev.reason);
+                gemConVocab = false;
+                _gemAbrirSesion(apiKey, false);
+                return;
+            }
+            alert('Gemini Live rechazó la conexión (' + ev.code + (ev.reason ? ': ' + ev.reason : '') + '). Revisa tu API key de Gemini y que el modelo esté disponible para tu cuenta.');
+            stopGeminiLiveRecording(true);
+            return;
+        }
+        if (isRecording) {
+            // La sesión se cortó a mitad del dictado (red o límite): se abre otra y se sigue.
+            console.warn('Gemini Live: sesión cerrada durante el dictado, reabriendo.');
+            if (gemInterim) { gemSessionFinal = _gemUnir(gemSessionFinal, gemInterim); gemInterim = ''; gemSessionFinal = vivoPintar(gemSessionFinal, ''); }
+            _gemAbrirSesion(apiKey, true);
+        }
+    };
+}
+
+async function startGeminiLiveRecording() {
+    const apiKey = (localStorage.getItem('gemini_api_key') || '').trim();
+    if (!apiKey) { alert('Configura tu API Key de Gemini en Configuración.'); return; }
+
+    try {
+        if (!gemStream) {
+            gemStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        const SAMPLE_RATE = 16000;
+
+        isRecording = true;
+        recordBtn.classList.add('recording');
+        recordText.innerText = 'Detener Gemini (F2)';
+        statusText.innerText = 'Conectando (Gemini Transcribe Live)...';
+        recordingPulse.classList.remove('hidden');
+
+        vivoIniciar(transcriptionArea.value || finalTranscript || '');
+        gemSessionFinal = '';
+        gemInterim = '';
+        gemPendingAudio = [];
+        gemConVocab = true;
+
+        gemAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        gemSource = gemAudioContext.createMediaStreamSource(gemStream);
+        gemProcessor = gemAudioContext.createScriptProcessor(2048, 1, 1); // 128 ms por trozo (~100 ms recomendado)
+        gemSource.connect(gemProcessor);
+        gemProcessor.connect(gemAudioContext.destination);
+        gemProcessor.onaudioprocess = (e) => {
+            if (!isRecording) return;
+            const b64 = _pcmToBase64(floatTo16BitPCM(e.inputBuffer.getChannelData(0)));
+            const ws = gemWs;
+            if (!ws || !gemReady || ws.readyState !== WebSocket.OPEN) {
+                gemPendingAudio.push(b64);
+                if (gemPendingAudio.length > 400) gemPendingAudio.shift(); // máx. ~50 s en espera
+                return;
+            }
+            try { ws.send(JSON.stringify({ realtimeInput: { audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } } })); } catch (_) {}
+        };
+
+        _gemAbrirSesion(apiKey, false);
+    } catch (e) {
+        console.error('No se pudo iniciar Gemini Live:', e);
+        alert('Error al acceder al micrófono o iniciar Gemini Live.');
+        stopGeminiLiveRecording(true);
+    }
+}
+
+function stopGeminiLiveRecording(immediate = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    recordText.innerText = 'Iniciar Dictado (F2)';
+    statusText.innerText = immediate ? 'Error o cerrado' : 'Finalizando...';
+    recordingPulse.classList.add('hidden');
+    if (gemRotarTimer) { clearTimeout(gemRotarTimer); gemRotarTimer = null; }
+
+    if (gemProcessor) { gemProcessor.disconnect(); gemProcessor = null; }
+    if (gemSource) { gemSource.disconnect(); gemSource = null; }
+    if (gemAudioContext && gemAudioContext.state !== 'closed') {
+        gemAudioContext.close(); gemAudioContext = null;
+    }
+    gemPendingAudio = [];
+
+    const ws = gemWs;
+    if (ws && ws.readyState === WebSocket.OPEN && !immediate && gemReady) {
+        // Fin del audio: Gemini entrega la transcripción final pendiente; luego se cierra.
+        try { ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } })); } catch (_) {}
+        setTimeout(() => {
+            if (vivoAbsorberEdicion()) { gemSessionFinal = ''; gemInterim = ''; }
+            if (gemInterim) { gemSessionFinal = _gemUnir(gemSessionFinal, gemInterim); gemInterim = ''; gemSessionFinal = vivoPintar(gemSessionFinal, ''); }
+            try { ws.close(); } catch (_) {}
+            statusText.innerText = 'Listo';
+        }, 2500);
+    } else {
+        if (ws) { try { ws.close(); } catch (_) {} }
+        statusText.innerText = 'Listo';
+    }
+}
+
 // === SUBIR AUDIO PARA TRANSCRIBIR (Soniox async vía Worker proxy) =========
 // Botón dedicado: sube un archivo de audio; el Worker lo transcribe con la API
 // asíncrona de Soniox (server-side, sin exponer la key) y AGREGA el texto al
@@ -1888,10 +2419,7 @@ async function transcribeUploadedAudio(file) {
         const form = new FormData();
         form.append('file', file, file.name || 'audio');
         form.append('language_hints', JSON.stringify(['es']));
-        form.append('context', JSON.stringify({
-            general: [{ key: 'domain', value: 'Radiología maxilofacial y dental (CBCT)' }],
-            terms: buildDeepgramKeyterms()
-        }));
+        form.append('context', JSON.stringify(buildSonioxContext()));
 
         const resp = await fetch(proxyUrl, { method: 'POST', body: form });
         if (!resp.ok) {
@@ -2087,6 +2615,7 @@ const deepgramKeyInput = document.getElementById('deepgram-key-input');
 const sonioxProxyInput = document.getElementById('soniox-proxy-input');
 const sonioxKeyInput = document.getElementById('soniox-key-input');
 const speechmaticsProxyInput = document.getElementById('speechmatics-proxy-input');
+const assemblyaiProxyInput = document.getElementById('assemblyai-proxy-input');
 const formatterModelSelect = document.getElementById('formatter-model-select');
 
 // Cargar API Keys si existen
@@ -2114,6 +2643,8 @@ if (savedSonioxProxy && sonioxProxyInput) sonioxProxyInput.value = savedSonioxPr
 if (savedSonioxKey && sonioxKeyInput) sonioxKeyInput.value = savedSonioxKey;
 const savedSpeechmaticsProxy = localStorage.getItem('speechmatics_proxy_url');
 if (savedSpeechmaticsProxy && speechmaticsProxyInput) speechmaticsProxyInput.value = savedSpeechmaticsProxy;
+const savedAssemblyaiProxy = localStorage.getItem('assemblyai_proxy_url');
+if (savedAssemblyaiProxy && assemblyaiProxyInput) assemblyaiProxyInput.value = savedAssemblyaiProxy;
 if (savedFormatterModel && formatterModelSelect) formatterModelSelect.value = savedFormatterModel;
 
 // Hace que el botón "Procesar con IA" muestre el modelo realmente seleccionado (Claude o Gemini).
@@ -2154,6 +2685,7 @@ saveKeyBtn.addEventListener('click', () => {
     localStorage.setItem('soniox_proxy_url', sonioxProxyInput ? sonioxProxyInput.value.trim() : '');
     localStorage.setItem('soniox_api_key', sonioxKeyInput ? sonioxKeyInput.value.trim() : '');
     localStorage.setItem('speechmatics_proxy_url', speechmaticsProxyInput ? speechmaticsProxyInput.value.trim() : '');
+    localStorage.setItem('assemblyai_proxy_url', assemblyaiProxyInput ? assemblyaiProxyInput.value.trim() : '');
     localStorage.setItem('formatter_model', formatterModel);
     actualizarBotonIA();
     
@@ -3435,12 +3967,14 @@ function adjustHeadersForSetTotal(text) {
     return text;
 }
 
-// === Red de seguridad CBCT: bloque de parámetros técnicos ===
-// El modelo (Gemini/Claude) a veces omite el bloque de parámetros del Cone-Beam
-// porque choca con las reglas de "cero alucinación / no copiar los ejemplos" del
-// prompt. Como ese bloque es texto fijo del equipo, lo insertamos por código para
-// garantizar que SIEMPRE aparezca. Solo se inyecta si el estudio es Cone-Beam y el
-// modelo NO lo incluyó (si el modelo ya lo puso, se respeta tal cual).
+// === Bloque de parámetros técnicos CBCT (solo plantilla QUILLOTA 3D) ===
+// Los valores (Planmeca Romexis, FOV 80x80x50, etc.) son del equipo de la sucursal
+// Quillota, así que el bloque SOLO va en los Cone Beam con plantilla QUILLOTA 3D.
+// - Plantilla QUILLOTA 3D: se fuerza el bloque estándar justo después de TIPO DE ESTUDIO
+//   (el modelo a veces lo omite o pone "Sin especificar").
+// - Cualquier otra plantilla: se ELIMINA el bloque aunque el modelo lo haya escrito
+//   (el prompt trae el bloque en sus ejemplos y el modelo tiende a copiarlo).
+// Se re-aplica al cambiar de plantilla con un informe ya generado en el editor.
 //
 // Si cambian los valores del equipo (FOV, vóxel, etc.), edítalos aquí:
 const CBCT_PARAM_LINES = [
@@ -3453,8 +3987,16 @@ const CBCT_PARAM_LINES = [
 ];
 // Distanciamiento por defecto si el dictado no menciona intervalo/distanciamiento:
 const CBCT_DIST_DEFAULT = "1,0";
+// Plantillas (id) que llevan el bloque técnico en los Cone Beam:
+const PLANTILLAS_CON_BLOQUE_CBCT = ['QUILLOTA_3D'];
+// Último dictado procesado: para recuperar el distanciamiento si se cambia de plantilla después.
+let _ultimoDictadoCBCT = "";
 
-function ensureCBCTParams(text, dictado = "") {
+function plantillaLlevaBloqueCBCT(templateId) {
+    return PLANTILLAS_CON_BLOQUE_CBCT.includes(templateId);
+}
+
+function ensureCBCTParams(text, dictado = "", templateId = (typeof templateSelect !== 'undefined' && templateSelect ? templateSelect.value : "")) {
     if (!text) return text;
 
     // 1. ¿El estudio es Cone-Beam? (se busca en la línea TIPO DE ESTUDIO)
@@ -3469,25 +4011,37 @@ function ensureCBCTParams(text, dictado = "") {
     const distMatch = (dictado + "\n" + text).match(/(?:distanciamiento|intervalo)\s*(?:de\s*)?(\d+(?:[.,]\d+)?)\s*mm/i);
     if (distMatch) dist = distMatch[1].replace(".", ",");
 
-    const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
-
-    // 3. Forzar el bloque completo a los valores ESTÁNDAR FIJOS del equipo. Se eliminan
-    //    las líneas de parámetros que haya escrito el modelo (Haiku tiende a ponerlas como
-    //    "Sin especificar"; Flash sí copiaba los valores de la plantilla) y se sustituyen
-    //    por el bloque fijo. El único dato del dictado que se conserva es el distanciamiento
-    //    (ya calculado). Las líneas se reconocen por su término técnico precedido de una
-    //    viñeta/guion, formato que no aparece en los hallazgos clínicos.
-    const isParamLine = (l) => /^\s*[-–—•*]\s*.*(par[aá]metros de exposici[oó]n|tama[ñn]o de campo de visi[oó]n|\bFOV\b|tama[ñn]o de v[oó]xel|se reconstruye la adquisici[oó]n volum[eé]trica|software\s+planmeca|romexis|panorex|cortes\s+paraxiales)/i.test(l);
-
+    // 3. Quitar SIEMPRE las líneas del bloque que haya escrito el modelo (con o sin viñeta).
+    //    Se reconocen por cómo EMPIEZAN, frases que no aparecen en los hallazgos clínicos.
+    const isParamLine = (l) => /^\s*(?:[-–—•*]\s*)?(par[aá]metros de exposici[oó]n|tama[ñn]o de campo de visi[oó]n|tama[ñn]o de v[oó]xel|se reconstruye la adquisici[oó]n volum[eé]trica|panorex y cortes paraxiales|cortes paraxiales\s*:)/i.test(l)
+        || /^\s*[-–—•*]\s*.*(\bFOV\b|software\s+planmeca|romexis)/i.test(l);
     const lines = text.split("\n").filter(l => !isParamLine(l));
 
-    // 4. Insertar el bloque estándar justo después de la línea "TIPO DE ESTUDIO".
+    // 4. Sin plantilla QUILLOTA 3D: el informe queda sin bloque.
+    if (!plantillaLlevaBloqueCBCT(templateId)) return lines.join("\n");
+
+    // 5. QUILLOTA 3D: insertar el bloque estándar justo después de la línea "TIPO DE ESTUDIO".
     const idx = lines.findIndex(l => /^\s*TIPO\s+DE\s+ESTUDIO/i.test(l));
     if (idx === -1) return text;
+    const bloque = CBCT_PARAM_LINES.map(l => l.replace("{D}", dist)).join("\n");
     lines.splice(idx + 1, 0, bloque);
-    console.info("[CBCT] Bloque de parámetros técnicos normalizado a los valores estándar del equipo. Verifica FOV/exposición/distanciamiento si el estudio no fue estándar.");
+    console.info("[CBCT] Bloque de parámetros técnicos (QUILLOTA 3D) normalizado a los valores estándar del equipo. Verifica FOV/exposición/distanciamiento si el estudio no fue estándar.");
     return lines.join("\n");
 }
+
+// Al cambiar de plantilla con un informe Cone Beam ya en el editor, poner o quitar el bloque.
+templateSelect.addEventListener('change', () => {
+    try {
+        const area = document.getElementById('transcription');
+        if (!area || !area.value) return;
+        const nuevo = normalizarSaltos(ensureCBCTParams(area.value, _ultimoDictadoCBCT, templateSelect.value));
+        if (nuevo !== area.value) {
+            area.value = nuevo;
+            finalTranscript = nuevo;
+            try { localStorage.setItem(AUTOSAVE_KEY, nuevo); } catch (e) { /* noop */ }
+        }
+    } catch (e) { console.warn('[CBCT] No se pudo ajustar el bloque al cambiar de plantilla:', e); }
+});
 
 // Normaliza el espaciado del informe en DOS pasos:
 //  1) Colapsa TODA línea en blanco a un solo salto. Haiku tiende a meter una línea en
@@ -3546,6 +4100,7 @@ function postProcesarInforme(texto, dictado) {
     let t = texto;
     try { t = quitarSeparacionBitewingNoDictada(t, dictado); } catch (e) { console.warn(e); }
     t = adjustHeadersForSetTotal(t);
+    _ultimoDictadoCBCT = dictado || "";
     t = ensureCBCTParams(t, dictado);
     try { t = restaurarRangosDientes(t, dictado); } catch (e) { console.warn(e); }
     try { t = restaurarNomenclaturaEntera(t, dictado); } catch (e) { console.warn(e); }
@@ -3730,7 +4285,10 @@ function verificarContenidoDictado(dictado, informe) {
     }
 
     // 2) Estudios dictados que no quedaron en TIPO DE ESTUDIO.
+    //    Las menciones dentro de una sugerencia ("se sugiere complementar con radiografía periapical
+    //    del diente 3.6") NO son estudios realizados: esa frase se ignora hasta el punto o punto y coma.
     const tipo = _normDict(((informe || '').match(/TIPO\s+DE\s+ESTUDIO\s*:\s*([^\n\r]+)/i) || [])[1] || '');
+    const ndEstudios = nd.replace(/\b(?:suger|sugier|recomend|recomiend|complement|aconsej|solicit|deriv|control(?:ar)?\s+con)[a-z]*[^.;]{0,200}/g, ' ');
     if (tipo) {
         const ESTUDIOS = [
             ['Radiografía Panorámica', /panoramica/, /panoramica/],
@@ -3741,7 +4299,7 @@ function verificarContenidoDictado(dictado, informe) {
             ['Set Total', /set\s+total/, /set\s+total/]
         ];
         ESTUDIOS.forEach(([nombre, enDictado, enTipo]) => {
-            if (enDictado.test(nd) && !enTipo.test(tipo)) {
+            if (enDictado.test(ndEstudios) && !enTipo.test(tipo)) {
                 avisos.push(`TIPO DE ESTUDIO: dictaste "${nombre}" pero no aparece en el tipo de estudio. Revísalo.`);
             }
         });

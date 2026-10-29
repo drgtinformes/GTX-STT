@@ -5,12 +5,15 @@
  * y las plantillas subidas se manejan "copia al escribir":
  *   - Al leer: si la beta ya tiene su propia copia la usa; si no, lee la oficial.
  *   - Al escribir: guarda SOLO en la copia beta (prefijo "beta__").
+ * También el motor de dictado elegido (la beta tiene motores que producción no conoce).
  * Claves de API, historial y contador se comparten tal cual.
  * Al pasar la beta a producción este archivo se elimina.
  */
 (function () {
     const PROTECTED = new Set(['custom_dict', 'custom_dict_meta', 'user_macros', 'user_templates',
-        'custom_dict_pending', 'custom_dict_rejected', 'custom_dict_versions']);
+        'custom_dict_pending', 'custom_dict_rejected', 'custom_dict_versions',
+        // Motor elegido: la beta tiene motores que producción no conoce (AssemblyAI, Gemini Live, Oak-1).
+        'selected_engine']);
     const PREFIX = 'beta__';
     const proto = Storage.prototype;
     const _get = proto.getItem, _set = proto.setItem, _rem = proto.removeItem;

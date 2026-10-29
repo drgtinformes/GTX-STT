@@ -48,8 +48,11 @@ El evaluador de arriba mide el **formateo** (la IA). Este mide el paso anterior:
 
 1. Crea `eval/audios_stt/` y pon ahí ~10 dictados reales (wav/mp3/m4a/webm/ogg) con un `.txt` del mismo nombre que contenga lo que dijiste, bien escrito (no el informe formateado).
 2. Define las claves de los motores que quieras probar (los que no tengan clave se saltan):
-   - PowerShell: `$env:SONIOX_API_KEY="..."; $env:SPEECHMATICS_API_KEY="..."; $env:OPENAI_API_KEY="sk-..."; $env:DEEPGRAM_API_KEY="..."`
-3. Corre `python eval/comparar_stt.py` (o `--motores "soniox,speechmatics"`, `--n 3`, `--sin-terminos`, `--simular`).
+   - PowerShell: `$env:SONIOX_API_KEY="..."; $env:SPEECHMATICS_API_KEY="..."; $env:OPENAI_API_KEY="sk-..."; $env:DEEPGRAM_API_KEY="..."; $env:ASSEMBLYAI_API_KEY="..."; $env:GEMINI_API_KEY="..."`
+   - Son las claves originales de cada consola (no la URL del proxy de Cloudflare).
+3. Corre `python eval/comparar_stt.py` (o `--motores "soniox,speechmatics,assemblyai,gemini"`, `--n 3`, `--sin-terminos`, `--simular`).
+
+Motores: `soniox`, `speechmatics` (Enhanced Medical), `speechmatics-oak` (Oak-1), `assemblyai` (Universal-3.5 Pro + modo médico), `gemini` (Gemini 3.5 Transcribe), `gpt-transcribe`, `deepgram`. Se usa la versión para archivos de cada motor; en el dictado en vivo los errores pueden ser algo mayores.
 
 Resultado: `eval/comparacion_stt.md` ordenado por **error clínico** (menor = mejor), con % de piezas FDI acertadas, WER y los términos que más falla cada motor. Los audios y salidas quedan fuera de git.
 

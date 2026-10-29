@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GTX Radiologia - STT</title>
-    <script src="beta-guard.js?v=2"></script>
+    <script src="beta-guard.js?v=3"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css?v=1.3">
     <link rel="stylesheet" href="canvas-board.css?v=7">
@@ -48,6 +48,9 @@
                         <option value="deepgram">🎯 Motor: Deepgram Nova-3 (Español · Keyterms)</option>
                         <option value="soniox">🌐 Motor: Soniox v5 (Español · Contexto)</option>
                         <option value="speechmatics">🩺 Motor: Speechmatics Medical (Español)</option>
+                        <option value="speechmatics-oak">🌳 Motor: Speechmatics Oak-1 (Médico · sin diccionario)</option>
+                        <option value="assemblyai">🏥 Motor: AssemblyAI Universal-3.6 Pro (Modo médico)</option>
+                        <option value="gemini-live">💎 Motor: Gemini 3.5 Transcribe Live (Español latino)</option>
                     </select>
                 </div>
                 <div class="status-indicator">
@@ -188,6 +191,14 @@
                         <input type="text" id="speechmatics-proxy-input" placeholder="https://speechmatics-token.tuusuario.workers.dev">
                         <p class="small-text" style="color: #34d399;">Emite keys temporales sin exponer tu API key (Speechmatics no permite la key directa en el navegador). Despliega <code>speechmatics-token-worker.js</code> en Cloudflare.</p>
                         <p class="small-text"><a href="https://portal.speechmatics.com/" target="_blank" style="color: #34d399;">Crea tu cuenta y API key de Speechmatics aquí</a>.</p>
+                        <p class="small-text" style="color: #34d399;">El mismo proxy sirve para "Speechmatics Medical" y "Speechmatics Oak-1".</p>
+                    </div>
+                    <div class="input-group" style="margin-bottom: 15px;">
+                        <label for="assemblyai-proxy-input">URL del proxy AssemblyAI (obligatorio · Cloudflare Worker):</label>
+                        <input type="text" id="assemblyai-proxy-input" placeholder="https://assemblyai-token.tuusuario.workers.dev">
+                        <p class="small-text" style="color: #a78bfa;">Emite tokens temporales sin exponer tu API key. Despliega <code>assemblyai-token-worker.js</code> en Cloudflare (secret <code>ASSEMBLYAI_API_KEY</code>).</p>
+                        <p class="small-text"><a href="https://www.assemblyai.com/dashboard/signup" target="_blank" style="color: #a78bfa;">Crea tu cuenta y API key de AssemblyAI aquí</a> (incluye US$50 de crédito).</p>
+                        <p class="small-text" style="color: #fbbf24;">El motor "Gemini 3.5 Transcribe Live" usa la misma API Key de Gemini de arriba; no necesita proxy.</p>
                     </div>
                     <div class="input-group" style="margin-bottom: 15px;">
                         <label for="formatter-model-select">Modelo para Procesar con IA:</label>
@@ -478,22 +489,23 @@
     
     <script src="../secrets.js"></script>
     <script src="../templates.js"></script>
-    <script src="prompt.js?v=9"></script>
+    <script src="prompt.js?v=10"></script>
     <script src="gmail-integration.js?v=1.4"></script>
     <script src="negrita.js?v=1"></script>
-    <script src="main.js?v=38"></script>
+    <script src="main.js?v=41"></script>
     <script src="canvas-board.js?v=8"></script>
     <script src="clasificador.js?v=3"></script>
     <script src="workstation.js?v=3"></script>
-    <script src="orders.js?v=4"></script>
-    <script src="lotes.js?v=3"></script>
+    <script src="etiqueta.js?v=1"></script>
+    <script src="orders.js?v=6"></script>
+    <script src="lotes.js?v=7"></script>
     <script src="dict-review.js?v=1"></script>
     <script src="backup.js?v=1"></script>
     <script src="revisor-ia.js?v=1"></script>
     <script src="revisor.js?v=4"></script>
     <script src="tanda-perfil.js?v=1"></script>
     <script src="carpetas.js?v=1"></script>
-    <script src="tanda.js?v=3"></script>
+    <script src="tanda.js?v=5"></script>
     
     <!-- Google API Libraries -->
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>

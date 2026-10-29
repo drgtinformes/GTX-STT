@@ -21,6 +21,7 @@ PREPARACION
 
 CLAVES (solo las de los motores que quieras probar; los demas se saltan)
   PowerShell:  $env:SONIOX_API_KEY="..."; $env:SPEECHMATICS_API_KEY="..."; $env:OPENAI_API_KEY="sk-..."; $env:DEEPGRAM_API_KEY="..."
+               $env:ASSEMBLYAI_API_KEY="..."; $env:GEMINI_API_KEY="..."
   CMD:         set SONIOX_API_KEY=...  &&  set SPEECHMATICS_API_KEY=...  (etc.)
 
 USO (desde la carpeta del proyecto)
@@ -31,10 +32,14 @@ USO (desde la carpeta del proyecto)
   python eval/comparar_stt.py --simular        # prueba la mecanica SIN llamar a las APIs
 
 MOTORES (mismo modelo y vocabulario que usa la app)
-  soniox          stt-async-v5 + contexto de dominio + terminos
-  speechmatics    Enhanced Medical en espanol (domain: medical) + additional_vocab
-  gpt-transcribe  OpenAI gpt-transcribe + prompt + keywords
-  deepgram        Nova-3 espanol + keyterms
+  soniox            stt-async-v5 + contexto de dominio (general + ejemplo) + terminos
+  speechmatics      Enhanced Medical en espanol (domain: medical) + additional_vocab
+  speechmatics-oak  Oak-1 (medico multilingue, language: multi; sin diccionario propio)
+  assemblyai        Universal-3.5 Pro + modo medico (domain: medical-v1) + keyterms
+  gemini            Gemini 3.5 Transcribe (es-419) + customVocabulary
+  gpt-transcribe    OpenAI gpt-transcribe + prompt + keywords
+  deepgram          Nova-3 espanol + keyterms
+  Nota: se usa la version para ARCHIVOS de cada motor; el dictado en vivo puede rendir algo peor.
 
 SALIDAS
   - Tabla en consola
@@ -57,21 +62,37 @@ ROOT = os.path.dirname(HERE)
 AUDIO_DIR_DEFAULT = os.path.join(HERE, 'audios_stt')
 OUT_DIR = os.path.join(HERE, 'stt_resultados')
 AUDIO_EXT = ('.wav', '.mp3', '.m4a', '.webm', '.ogg', '.flac', '.mp4', '.mpeg', '.mpga')
-MOTORES_TODOS = ['soniox', 'speechmatics', 'gpt-transcribe', 'deepgram']
+MOTORES_TODOS = ['soniox', 'speechmatics', 'speechmatics-oak', 'assemblyai', 'gemini', 'gpt-transcribe', 'deepgram']
 ENV_KEY = {
     'soniox': 'SONIOX_API_KEY',
     'speechmatics': 'SPEECHMATICS_API_KEY',
+    'speechmatics-oak': 'SPEECHMATICS_API_KEY',
+    'assemblyai': 'ASSEMBLYAI_API_KEY',
+    'gemini': 'GEMINI_API_KEY',
     'gpt-transcribe': 'OPENAI_API_KEY',
     'deepgram': 'DEEPGRAM_API_KEY',
 }
+# Cuantos terminos recibe cada motor (igual que la app: buildSttTerms(n)).
+LIMITE_TERMINOS = {'soniox': 250, 'speechmatics': 150, 'speechmatics-oak': 0, 'assemblyai': 150,
+                   'gemini': 100, 'gpt-transcribe': 80, 'deepgram': 80}
 
-# Mismos terminos base que DEEPGRAM_BASE_KEYTERMS en main.js.
+# Mismos terminos base que STT_TERMINOS_BASE en main.js (oct-2026).
 TERMINOS_BASE = [
-    "cóndilo mandibular", "apófisis coronoides", "seno maxilar", "conducto dentario inferior",
-    "reabsorción radicular", "reabsorción ósea", "periápice", "periapical", "radiolúcido",
-    "radiopaco", "cortical ósea", "hueso trabecular", "CBCT", "ATM", "tercer molar",
-    "quiste dentígero", "lesión periapical", "tabique nasal", "fosa nasal", "hiperostosis",
-    "furca", "ligamento periodontal", "lámina dura", "reborde alveolar", "cóndilo",
+    "agenesia", "atrición", "apiñamiento", "basilar", "reabsorción radicular", "reabsorción ósea",
+    "periápice", "periapical", "radiolúcido", "radiopaco", "radiolucidez", "radiopacidad",
+    "lámina dura", "ligamento periodontal", "furca", "lesión periapical", "periodontitis apical",
+    "quiste dentígero", "quiste radicular", "odontoma", "hipercementosis", "osteítis condensante",
+    "dilaceración radicular", "taurodontismo", "supernumerario", "mesiodens", "germen dentario",
+    "rizogénesis", "estadio de Nolla", "erupción", "retenido", "tercer molar",
+    "cóndilo mandibular", "cóndilo", "apófisis coronoides", "apófisis estiloides", "eminencia articular",
+    "cavidad glenoidea", "conducto dentario inferior", "agujero mentoniano", "canal incisivo",
+    "espina nasal anterior", "seno maxilar", "piso de seno", "neumatización", "engrosamiento mucoso",
+    "tabique nasal", "fosa nasal", "cornete", "tuberosidad del maxilar", "reborde alveolar",
+    "cresta ósea", "cortical ósea", "hueso trabecular", "rama mandibular", "sínfisis mandibular",
+    "hueso hioides", "vértebras cervicales",
+    "obturación endodóntica", "tratamiento de conductos", "perno muñón", "implante oseointegrado",
+    "hiperostosis", "osteofito", "esclerosis subcondral", "remodelación condilar", "abfracción",
+    "CBCT", "ATM", "FOV", "vóxel", "telerradiografía", "panorámica", "bite-wing", "Cone Beam",
 ]
 # Terminos que ya dieron problemas en el dictado real (se miden siempre).
 TERMINOS_EXTRA = ["agenesia", "basilar", "atrición", "apiñamiento", "alveolar", "mediante", "alineamiento"]
@@ -79,6 +100,19 @@ TERMINOS_EXTRA = ["agenesia", "basilar", "atrición", "apiñamiento", "alveolar"
 CONTEXTO = ('Dictado de un informe imagenológico de radiología maxilofacial y dental '
             '(panorámica, CBCT, periapical, bite-wing, telerradiografía, ATM) en español de Chile. '
             'Notación dental FDI (ej. pieza 1.6, 3.8).')
+
+# Contexto de Soniox: mismo que buildSonioxContext() en main.js.
+SONIOX_GENERAL = [
+    {'key': 'domain', 'value': 'Radiología maxilofacial y dental'},
+    {'key': 'topic', 'value': 'Dictado de informe imagenológico: panorámica, CBCT (Cone Beam), periapicales, bite-wing, telerradiografía, ATM'},
+    {'key': 'language', 'value': 'Español de Chile, terminología odontológica y radiológica'},
+    {'key': 'notation', 'value': 'Piezas dentales en notación FDI escritas como 1.6, 3.8, 5.5 (se dictan "uno punto seis")'},
+    {'key': 'speaker', 'value': 'Radiólogo maxilofacial dictando hallazgos'},
+]
+SONIOX_TEXT = ('Ejemplo de dictado: Pieza 3.8 incluida en posición mesioangulada, en relación con el conducto dentario inferior. '
+               'Reabsorción ósea horizontal leve generalizada. Lesión periapical radiolúcida en pieza 4.6 con tratamiento de conductos. '
+               'Senos maxilares neumatizados, con engrosamiento mucoso basal en el seno maxilar derecho. Agenesia de piezas 1.2 y 2.2. '
+               'Cóndilos mandibulares de morfología conservada.')
 
 
 # ----------------------- Terminos clinicos -----------------------
@@ -95,19 +129,19 @@ def cargar_terminos():
     extra = os.path.join(HERE, 'terminos_clinicos.txt')
     if os.path.exists(extra):
         terms += [l.strip() for l in open(extra, encoding='utf-8') if l.strip() and not l.startswith('#')]
-    # Mismo filtro que buildDeepgramKeyterms(): letras, 3-40 chars, max 3 palabras.
+    # Mismo filtro que buildSttTerms() en main.js: letras, 3-40 chars, sin numeros, max 4 palabras.
     vistos, out = set(), []
     for t in terms:
-        t = t.strip()
-        k = t.lower()
-        if (3 <= len(t) <= 40 and re.search(r'[a-záéíóúñ]', k) and len(k.split()) <= 3
-                or t in ('CBCT', 'ATM')) and k not in vistos:
+        t = re.sub(r'\s+', ' ', t.strip())
+        k = sin_tildes(t.lower())
+        if (3 <= len(t) <= 40 and re.search(r'[a-záéíóúñ]', t.lower()) and not re.search(r'\d', t)
+                and len(t.split()) <= 4) and k not in vistos:
             vistos.add(k); out.append(t)
     return out
 
 
 def terminos_para_motor(terminos, limite=80):
-    """Lo que se le 'sugiere' al motor (como en la app: tope 80)."""
+    """Lo que se le 'sugiere' al motor (mismo tope que la app para ese motor)."""
     return [t for t in terminos][:limite]
 
 
@@ -230,8 +264,7 @@ def motor_soniox(ruta, key, terms):
     try:
         cfg = {'model': 'stt-async-v5', 'file_id': file_id, 'language_hints': ['es']}
         if terms is not None:
-            cfg['context'] = {'general': [{'key': 'domain', 'value': 'Radiología maxilofacial y dental (CBCT)'}],
-                              'terms': terms}
+            cfg['context'] = {'general': SONIOX_GENERAL, 'text': SONIOX_TEXT, 'terms': terms}
         st, r = http('POST', f'{base}/v1/transcriptions', {**auth, 'Content-Type': 'application/json'},
                      json.dumps(cfg).encode('utf-8'))
         if st >= 300: raise err(st, r)
@@ -253,14 +286,17 @@ def motor_soniox(ruta, key, terms):
         http('DELETE', f'{base}/v1/files/{file_id}', auth)
 
 
-def motor_speechmatics(ruta, key, terms):
+def motor_speechmatics(ruta, key, terms, oak=False):
     base = 'https://asr.api.speechmatics.com/v2'
     auth = {'Authorization': f'Bearer {key}'}
     datos = open(ruta, 'rb').read()
 
     def crear(con_vocab):
-        tc = {'language': 'es', 'operating_point': 'enhanced', 'domain': 'medical'}
-        if con_vocab and terms:
+        if oak:   # Oak-1: medico multilingue, sin domain ni diccionario propio
+            tc = {'model': 'oak-1', 'language': 'multi'}
+        else:
+            tc = {'language': 'es', 'operating_point': 'enhanced', 'domain': 'medical'}
+        if con_vocab and terms and not oak:
             tc['additional_vocab'] = [{'content': t} for t in terms]
         cfg = {'type': 'transcription', 'transcription_config': tc}
         body, ct = multipart([('config', json.dumps(cfg))],
@@ -324,9 +360,77 @@ def motor_deepgram(ruta, key, terms):
     return j['results']['channels'][0]['alternatives'][0].get('transcript', '').strip()
 
 
+def motor_speechmatics_oak(ruta, key, terms):
+    return motor_speechmatics(ruta, key, None, oak=True)
+
+
+def motor_assemblyai(ruta, key, terms):
+    base = 'https://api.assemblyai.com'
+    auth = {'Authorization': key}
+    st, r = http('POST', f'{base}/v2/upload', {**auth, 'Content-Type': 'application/octet-stream'},
+                 open(ruta, 'rb').read())
+    if st >= 300: raise err(st, r)
+    audio_url = json.loads(r)['upload_url']
+    cfg = {'audio_url': audio_url, 'speech_models': ['universal-3-5-pro'], 'language_code': 'es',
+           'domain': 'medical-v1'}
+    if terms:
+        cfg['keyterms_prompt'] = [t for t in terms if len(t.split()) <= 6]
+    # Si la API rechazara algun campo, se reintenta con una configuracion mas simple.
+    intentos = [cfg,
+                {k: v for k, v in cfg.items() if k != 'speech_models'},
+                dict({k: v for k, v in cfg.items() if k not in ('speech_models', 'language_code')}, language_detection=True)]
+    for i, c in enumerate(intentos):
+        st, r = http('POST', f'{base}/v2/transcript', {**auth, 'Content-Type': 'application/json'},
+                     json.dumps(c).encode('utf-8'))
+        if st < 300: break
+        if st != 400 or i == len(intentos) - 1: raise err(st, r)
+        print(f'      (assemblyai rechazo la configuracion {i + 1}; reintento mas simple: {r[:120]!r})')
+    tid = json.loads(r)['id']
+    try:
+        for _ in range(300):
+            time.sleep(2)
+            st, r = http('GET', f'{base}/v2/transcript/{tid}', auth)
+            if st >= 300: continue
+            j = json.loads(r)
+            if j.get('status') == 'completed':
+                return (j.get('text') or '').strip()
+            if j.get('status') == 'error':
+                raise RuntimeError('AssemblyAI: ' + str(j.get('error')))
+        raise RuntimeError('AssemblyAI no termino a tiempo')
+    finally:
+        http('DELETE', f'{base}/v2/transcript/{tid}', auth)
+
+
+def motor_gemini(ruta, key, terms):
+    import base64
+    datos = open(ruta, 'rb').read()
+    if len(datos) > 19 * 1024 * 1024:
+        raise RuntimeError('Gemini (inline): audio > 19 MB; usa un dictado mas corto')
+    mime = mime_de(ruta)
+    if mime == 'video/webm': mime = 'audio/webm'
+    tc = {'languageCodes': ['es-419']}
+    if terms:
+        tc['customVocabulary'] = terms[:100]
+    body = {'contents': [{'parts': [{'inlineData': {'mimeType': mime, 'data': base64.b64encode(datos).decode('ascii')}}]}],
+            'generationConfig': {'audioTranscriptionConfig': tc}}
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent'
+    st, r = http('POST', url, {'x-goog-api-key': key, 'Content-Type': 'application/json'}, json.dumps(body).encode('utf-8'))
+    if st == 400 and terms and b'ocabular' in r:
+        print('      (gemini rechazo customVocabulary; reintento sin el)')
+        tc.pop('customVocabulary', None)
+        st, r = http('POST', url, {'x-goog-api-key': key, 'Content-Type': 'application/json'}, json.dumps(body).encode('utf-8'))
+    if st >= 300: raise err(st, r)
+    j = json.loads(r)
+    partes = ((j.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+    return ' '.join(p.get('text', '') for p in partes if p.get('text')).strip()
+
+
 MOTORES = {
     'soniox': motor_soniox,
     'speechmatics': motor_speechmatics,
+    'speechmatics-oak': motor_speechmatics_oak,
+    'assemblyai': motor_assemblyai,
+    'gemini': motor_gemini,
     'gpt-transcribe': motor_gpt_transcribe,
     'deepgram': motor_deepgram,
 }
@@ -335,7 +439,8 @@ MOTORES = {
 def salida_simulada(ref, motor, terminos):
     """Estropea el texto correcto de forma distinta por motor para probar la mecanica."""
     rnd = random.Random(hash(motor) % 1000 + len(ref))
-    tasa = {'soniox': 0.3, 'speechmatics': 0.15, 'gpt-transcribe': 0.25, 'deepgram': 0.45}.get(motor, 0.3)
+    tasa = {'soniox': 0.3, 'speechmatics': 0.15, 'speechmatics-oak': 0.12, 'assemblyai': 0.15, 'gemini': 0.2,
+            'gpt-transcribe': 0.25, 'deepgram': 0.45}.get(motor, 0.3)
     h = ref
     for t in terminos:
         if rnd.random() < tasa:
@@ -371,13 +476,13 @@ def main():
         sys.exit('No encontre pares audio + .txt en ' + a.carpeta)
 
     terminos = cargar_terminos()
-    sugeridos = None if a.sin_terminos else terminos_para_motor(terminos)
+    sugerir = lambda m: None if a.sin_terminos else terminos_para_motor(terminos, LIMITE_TERMINOS.get(m, 80))
     motores = [m.strip() for m in a.motores.split(',') if m.strip()]
     for m in motores:
         if m not in MOTORES: sys.exit(f'Motor desconocido: {m}. Opciones: {", ".join(MOTORES)}')
 
     print(f'{len(casos)} audios · {len(terminos)} terminos clinicos medidos · '
-          f'vocabulario sugerido: {"no" if sugeridos is None else len(sugeridos)}')
+          f'vocabulario sugerido: {"no" if a.sin_terminos else "si (tope segun motor, como en la app)"}')
     resumen = []
     for m in motores:
         key = os.environ.get(ENV_KEY[m], '').strip()
@@ -391,7 +496,7 @@ def main():
         for nombre, ruta, ref in casos:
             t0 = time.time()
             try:
-                hyp = salida_simulada(ref, m, terminos) if a.simular else MOTORES[m](ruta, key, sugeridos)
+                hyp = salida_simulada(ref, m, terminos) if a.simular else MOTORES[m](ruta, key, sugerir(m))
             except Exception as e:
                 errores += 1
                 print(f'  {nombre}: ERROR {e}')
