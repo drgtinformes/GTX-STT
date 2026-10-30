@@ -1742,6 +1742,7 @@ let smPendingAudio = [];     // audio captado antes de que el servidor esté lis
 let smBaseTranscript = '';
 let smSessionFinal = '';
 let smStopTimer = null;
+let smPrimerError = '';     // error del 1er intento (se muestra si el reintento también falla)
 
 async function getSpeechmaticsToken() {
     const proxyUrl = getProxyUrl('speechmatics_proxy_url');
@@ -1767,6 +1768,7 @@ function smEsOak() {
 function smNombre() { return smEsOak() ? 'Speechmatics Oak-1' : 'Speechmatics Medical'; }
 
 async function startSpeechmaticsRecording(useVocab = true) {
+    if (useVocab) smPrimerError = '';
     let token;
     try {
         token = await getSpeechmaticsToken();
@@ -1873,17 +1875,35 @@ async function startSpeechmaticsRecording(useVocab = true) {
 
                 case 'Error': {
                     console.error('Speechmatics error:', data.type, data.reason);
-                    // Si el diccionario propio no fuera compatible con el modelo médico,
-                    // reintenta una vez sin él (antes de haber empezado a transcribir).
-                    if (useVocab && !smStarted && smWs === ws) {
-                        console.warn('Speechmatics: reintento sin additional_vocab.');
+                    const motivo = (data.type || 'error') + (data.reason ? ': ' + data.reason : '');
+                    const esCuota = data.type === 'quota_exceeded' || /quota/i.test(data.reason || '');
+                    // Si el diccionario propio (o partials/max_delay en Oak-1) no fuera compatible,
+                    // reintenta UNA vez con configuración mínima, antes de empezar a transcribir.
+                    // Nunca ante un error de cuota: reintentar abre otra sesión y empeora el límite
+                    // de sesiones simultáneas (antes este reintento tapaba el error real).
+                    if (useVocab && !smStarted && smWs === ws && !esCuota) {
+                        smPrimerError = motivo;
+                        console.warn('Speechmatics: reintento con configuración mínima tras →', motivo);
                         ws.onclose = null;
+                        ws.onerror = null;
                         stopSpeechmaticsRecording(true);
-                        startSpeechmaticsRecording(false);
+                        statusText.innerText = 'Reintentando (' + smNombre() + ')...';
+                        // Espera a que el servidor libere la sesión anterior antes de abrir otra.
+                        setTimeout(() => startSpeechmaticsRecording(false), 1500);
                         return;
                     }
                     if (isRecording && smWs === ws) {
-                        alert('Error de Speechmatics: ' + (data.reason || data.type));
+                        let msg = 'Error de ' + smNombre() + ': ' + (data.reason || data.type);
+                        if (smPrimerError) msg += '\n(1er intento: ' + smPrimerError + ')';
+                        if (esCuota) {
+                            msg += smEsOak()
+                                ? '\n\nSi "Speechmatics Medical" sí funciona, lo más probable es que tu cuenta '
+                                  + 'todavía no tenga Oak-1 habilitado en tiempo real (Speechmatics lo anunció solo '
+                                  + 'para batch). Usa Speechmatics Medical mientras tanto.'
+                                : '\n\nHay demasiadas sesiones abiertas a la vez (la cuenta gratuita permite 2). '
+                                  + 'Cierra otras pestañas que estén dictando y espera unos segundos.';
+                        }
+                        alert(msg);
                         stopSpeechmaticsRecording(true);
                     }
                     return;
