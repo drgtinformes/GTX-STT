@@ -13,7 +13,8 @@
  */
 (function () {
     'use strict';
-    const FLAG = 'gtx_beta_promovida';
+    // _2 = segundo paso a producción (nov-2026: motores nuevos + diccionario con versiones).
+    const FLAG = 'gtx_beta_promovida_2';
     const P = 'beta__';
     let ls;
     try { ls = window.localStorage; if (ls.getItem(FLAG)) return; } catch (e) { return; }
@@ -70,6 +71,7 @@
     try {
         for (const [k, v] of Object.entries(out)) ls.setItem(k, v);
         for (const k of KEYS) ls.removeItem(P + k);
+        ls.removeItem(P + 'selected_engine');   // la beta vuelve a partir con el motor de producción
         ls.setItem(FLAG, String(Date.now()));
         console.info('[GTX] Configuración de la beta traída a producción:', Object.keys(out).join(', '));
     } catch (e) {

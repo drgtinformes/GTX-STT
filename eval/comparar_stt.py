@@ -32,7 +32,7 @@ USO (desde la carpeta del proyecto)
   python eval/comparar_stt.py --simular        # prueba la mecanica SIN llamar a las APIs
 
 MOTORES (mismo modelo y vocabulario que usa la app)
-  soniox            stt-async-v5 + contexto de dominio (general + ejemplo) + terminos
+  soniox            stt-async-v6 + contexto de dominio (general + ejemplo) + terminos
   speechmatics      Enhanced Medical en espanol (domain: medical) + additional_vocab
   speechmatics-oak  Oak-1 (medico multilingue, language: multi; sin diccionario propio)
   assemblyai        Universal-3.5 Pro + modo medico (domain: medical-v1) + keyterms
@@ -262,7 +262,7 @@ def motor_soniox(ruta, key, terms):
     file_id = json.loads(r)['id']
     tr_id = None
     try:
-        cfg = {'model': 'stt-async-v5', 'file_id': file_id, 'language_hints': ['es']}
+        cfg = {'model': 'stt-async-v6', 'file_id': file_id, 'language_hints': ['es']}
         if terms is not None:
             cfg['context'] = {'general': SONIOX_GENERAL, 'text': SONIOX_TEXT, 'terms': terms}
         st, r = http('POST', f'{base}/v1/transcriptions', {**auth, 'Content-Type': 'application/json'},

@@ -72,7 +72,7 @@ async function handleFileTranscription(request, env, headers) {
     return jsonResponse({ error: "Falta el archivo de audio (campo 'file')." }, 400, headers);
   }
 
-  const model = (typeof form.get("model") === "string" && form.get("model")) || "stt-async-v5";
+  const model = (typeof form.get("model") === "string" && form.get("model")) || "stt-async-v6";
   const languageHints = safeParse(form.get("language_hints")) || ["es"];
   const context = safeParse(form.get("context"));
 

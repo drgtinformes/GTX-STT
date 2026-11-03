@@ -1549,6 +1549,13 @@ let sonioxStream = null;
 let sonioxSource = null;
 let sonioxBaseTranscript = '';
 let sonioxSessionFinal = '';
+// Modelos Soniox. v6 (3-nov-2026) usa la misma API que v5: solo cambia el nombre.
+// Si el servidor rechaza v6 (cuenta/región sin habilitar), se vuelve a v5 sola.
+const SONIOX_RT_MODEL = 'stt-rt-v6';
+const SONIOX_RT_FALLBACK = 'stt-rt-v5';
+const SONIOX_ASYNC_MODEL = 'stt-async-v6';
+const SONIOX_ASYNC_FALLBACK = 'stt-async-v5';
+let sonioxModeloRt = SONIOX_RT_MODEL;
 
 // Token para conectar: proxy (temporary key, seguro) o key directa (solo pruebas).
 // Contexto de Soniox (máx. 8.000 tokens): 'general' describe el dominio (lo que más pesa
@@ -1609,6 +1616,7 @@ async function startSonioxRecording() {
         const SAMPLE_RATE = 16000;
         sonioxWs = new WebSocket('wss://stt-rt.soniox.com/transcribe-websocket');
         sonioxWs.binaryType = 'arraybuffer';
+        const wsSesion = sonioxWs;
 
         sonioxWs.onopen = () => {
             isRecording = true;
@@ -1625,9 +1633,7 @@ async function startSonioxRecording() {
             // Configuración: DEBE ser el primer mensaje y de tipo texto.
             sonioxWs.send(JSON.stringify({
                 api_key: token,
-                // v5 (jun-2026): mejor uso del contexto (términos de dominio).
-                // 'stt-rt-preview' fue retirado y solo funcionaba como alias.
-                model: 'stt-rt-v5',
+                model: sonioxModeloRt,
                 audio_format: 's16le',
                 num_channels: 1,
                 sample_rate: SAMPLE_RATE,
@@ -1649,10 +1655,19 @@ async function startSonioxRecording() {
         };
 
         sonioxWs.onmessage = (message) => {
+            if (wsSesion !== sonioxWs) return;   // socket de un intento anterior
             let data;
             try { data = JSON.parse(message.data); } catch (_) { return; }
             if (data.error_code) {
                 console.error('Soniox error:', data.error_code, data.error_message);
+                // v6 rechazado (modelo no disponible) → reintenta con v5 sin molestar.
+                if (sonioxModeloRt !== SONIOX_RT_FALLBACK && /model/i.test(data.error_message || '')) {
+                    console.warn('Soniox: ' + sonioxModeloRt + ' no disponible, se usa ' + SONIOX_RT_FALLBACK);
+                    sonioxModeloRt = SONIOX_RT_FALLBACK;
+                    stopSonioxRecording(true);
+                    startSonioxRecording();
+                    return;
+                }
                 if (isRecording) { alert('Error de Soniox: ' + data.error_message); stopSonioxRecording(true); }
                 return;
             }
@@ -1679,6 +1694,7 @@ async function startSonioxRecording() {
         };
 
         sonioxWs.onerror = (err) => {
+            if (wsSesion !== sonioxWs) return;
             console.error('Soniox WebSocket error:', err);
             if (isRecording) {
                 alert('Error de conexión con Soniox. Revisa el proxy/clave y tu saldo.');
@@ -1688,6 +1704,7 @@ async function startSonioxRecording() {
 
         sonioxWs.onclose = (ev) => {
             console.log('Soniox WebSocket cerrado.', ev.code, ev.reason || '');
+            if (wsSesion !== sonioxWs) return;
             if (isRecording) stopSonioxRecording(true);
         };
 
@@ -2451,19 +2468,26 @@ async function transcribeUploadedAudio(file) {
     if (recordText) recordText.innerText = 'Transcribiendo archivo...';
 
     try {
-        const form = new FormData();
-        form.append('file', file, file.name || 'audio');
-        form.append('language_hints', JSON.stringify(['es']));
-        form.append('context', JSON.stringify(buildSonioxContext()));
+        // v6 primero; si el servidor no lo acepta, se repite con v5.
+        let data = null;
+        for (const modelo of [SONIOX_ASYNC_MODEL, SONIOX_ASYNC_FALLBACK]) {
+            const form = new FormData();
+            form.append('file', file, file.name || 'audio');
+            form.append('model', modelo);
+            form.append('language_hints', JSON.stringify(['es']));
+            form.append('context', JSON.stringify(buildSonioxContext()));
 
-        const resp = await fetch(proxyUrl, { method: 'POST', body: form });
-        if (!resp.ok) {
+            const resp = await fetch(proxyUrl, { method: 'POST', body: form });
+            if (resp.ok) { data = await resp.json(); break; }
             let msg = 'El proxy respondió ' + resp.status;
             try { const e = await resp.json(); if (e && e.error) msg = e.error + (e.detail ? ' — ' + e.detail : ''); } catch (_) {}
+            if (modelo !== SONIOX_ASYNC_FALLBACK && /model/i.test(msg)) {
+                console.warn('Soniox: ' + modelo + ' no disponible para archivos, se usa ' + SONIOX_ASYNC_FALLBACK);
+                continue;
+            }
             throw new Error(msg);
         }
 
-        const data = await resp.json();
         let text = (data.text || '').trim();
         if (!text) { alert('No se obtuvo texto de la transcripción del archivo.'); return; }
 

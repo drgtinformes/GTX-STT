@@ -11,7 +11,7 @@ Aplicación web para **dictado de informes radiológicos odontológicos/maxilofa
   - *GPT-Transcribe (OpenAI)* — transcripción por archivo (`gpt-transcribe`, con keywords clínicas; respaldo `gpt-4o-transcribe`).
   - *GPT Live Transcribe (OpenAI)* — transcripción en vivo (`gpt-live-transcribe`) con contador de costo.
   - *Deepgram Nova-3* — español general + keyterms (proxy: `deepgram-token-worker.js`).
-  - *Soniox v5* — `stt-rt-v5` con contexto de dominio (proxy: `soniox-token-worker.js`).
+  - *Soniox v6* — `stt-rt-v6` (vuelve a `stt-rt-v5` si la cuenta rechaza v6) con contexto de dominio (proxy: `soniox-token-worker.js`).
   - *Speechmatics Medical* — modelo médico en español (`domain: medical`) en tiempo real (proxy obligatorio: `speechmatics-token-worker.js`).
 - **Comparador de motores de dictado** en `eval/comparar_stt.py` (tus audios reales vs. tu texto correcto).
 - **Procesamiento con IA** (Gemini / Claude) que reestructura el dictado según el formato radiológico definido en `prompt.js`.
@@ -85,5 +85,5 @@ Para agregar una nueva, puedes subir tu `.docx` desde la propia app (botón *Ges
 
 ## Notas y limitaciones
 
-- Verifica que los identificadores de modelo en `main.js` (Anthropic `claude-opus-4-7`, OpenAI `gpt-transcribe` / `gpt-live-transcribe`, Soniox `stt-rt-v5`) sigan vigentes en cada proveedor; si cambian, esas llamadas fallan.
+- Verifica que los identificadores de modelo en `main.js` (Anthropic `claude-opus-4-7`, OpenAI `gpt-transcribe` / `gpt-live-transcribe`, Soniox `stt-rt-v6` / `stt-async-v6`) sigan vigentes en cada proveedor; si cambian, esas llamadas fallan.
 - El motor de voz nativo solo está disponible en navegadores basados en Chromium.
