@@ -67,7 +67,7 @@ Si no hay errores: {"observaciones":[]}`;
 
     // ---------- configuración / costo / excepciones ----------
     const cfg = () => ({ enabled: true, alcance: 'todos', ...read(CFG_KEY, {}) });
-    const setCfg = (c) => write(CFG_KEY, { ...cfg(), ...c });
+    const setCfg = (c) => { write(CFG_KEY, { ...cfg(), ...c }); renderCfg(); renderToggle(); };
     const excepciones = () => read(EXC_KEY, []);
 
     function mesActual() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
@@ -228,6 +228,34 @@ Si no hay errores: {"observaciones":[]}`;
         try { key = localStorage.getItem('anthropic_api_key'); } catch (e) { /* noop */ }
         sec.querySelector('.ria-warn').hidden = !!key;
     }
+    // ---------- Interruptor rápido junto a Word / Gmail ----------
+    let toggleBtn = null;
+    function renderToggle() {
+        if (!toggleBtn) return;
+        const on = cfg().enabled;
+        let key = null;
+        try { key = localStorage.getItem('anthropic_api_key'); } catch (e) { /* noop */ }
+        toggleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        toggleBtn.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:${on ? '#a855f7' : '#64748b'}"></span>Revisión IA: ${on ? 'ON' : 'OFF'}`;
+        toggleBtn.style.opacity = on ? '1' : '0.6';
+        toggleBtn.style.borderColor = on ? 'rgba(168,85,247,.6)' : 'var(--glass-border)';
+        toggleBtn.title = on
+            ? (key ? 'Revisión con IA activada (Claude Haiku). Clic para desactivar.' : 'Activada, pero falta la clave de Anthropic en ⚙ Configuración.')
+            : 'Revisión con IA desactivada. Clic para activar.';
+    }
+    function buildToggle() {
+        const ref = document.getElementById('send-gmail-btn') || document.getElementById('generate-word-btn');
+        if (!ref || !ref.parentNode) return;
+        toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
+        toggleBtn.id = 'ria-toggle-btn';
+        toggleBtn.className = 'btn secondary-btn';
+        toggleBtn.style.cssText = 'padding:8px 12px;font-size:.85rem;border:1px solid var(--glass-border)';
+        toggleBtn.addEventListener('click', () => setCfg({ enabled: !cfg().enabled }));
+        ref.parentNode.insertBefore(toggleBtn, ref.nextSibling);
+        renderToggle();
+    }
+
     function buildUI() {
         const modal = document.getElementById('config-modal');
         if (!modal) return;
@@ -265,8 +293,13 @@ Si no hay errores: {"observaciones":[]}`;
         const cfgBtn = document.getElementById('config-btn');
         if (cfgBtn) cfgBtn.addEventListener('click', renderCfg);
         renderCfg();
+        // al cerrar Configuración puede haber cambiado la clave de Anthropic
+        modal.addEventListener('click', () => setTimeout(renderToggle, 0));
     }
 
     window.GTXRevisorIA = { prefetch, obtener, listo, enabledFor, agregarExcepcion, excepciones, MODEL, PRICE, _prompt: PROMPT_FIJO };
     buildUI();
+    buildToggle();
+    // sincroniza si se cambia en otra pestaña
+    window.addEventListener('storage', (e) => { if (e.key === CFG_KEY) { renderCfg(); renderToggle(); } });
 })();
