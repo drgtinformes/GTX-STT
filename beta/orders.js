@@ -6,6 +6,8 @@
  *   activa (el botón Gmail responde directo a ESE hilo, sin buscar por nombre) y
  *   selecciona la plantilla que usaste la última vez con ese remitente.
  * - Al enviar, recuerda remitente → plantilla y saca la orden de pendientes.
+ * - Ovalle: al abrir la orden escribe en el dictado la edad (si viene en el texto del correo)
+ *   y, como fecha del informe, la fecha de envío del correo.
  *
  * Depende de gmail-integration.js (authenticateGmail, loadGmailToken, gapi) y
  * de workstation.js (GTXWorkstation.openBoard).
@@ -93,6 +95,131 @@
             .trim();
     }
 
+    // ---------- Edad y fecha desde el correo (Ovalle) ----------
+    // Ovalle a veces escribe la edad del paciente en el texto del correo, y la fecha del informe
+    // es la del envío del correo. Se leen al cargar la bandeja y se insertan al abrir la orden.
+    const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+    function b64urlTexto(data) {
+        try {
+            const bin = atob(String(data || '').replace(/-/g, '+').replace(/_/g, '/'));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new TextDecoder('utf-8').decode(bytes);
+        } catch (e) { return ''; }
+    }
+    function htmlATexto(html) {
+        _decoder.innerHTML = String(html || '')
+            .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+            .replace(/<br\s*\/?>|<\/(p|div|tr|li|h\d)>/gi, '\n')
+            .replace(/<[^>]+>/g, ' ');
+        return _decoder.value;
+    }
+    /** Texto del cuerpo de un mensaje (text/plain; si no hay, text/html sin etiquetas). Sin líneas citadas ni URLs. */
+    function textoMensaje(msg) {
+        const plain = [], html = [];
+        (function walk(part) {
+            if (!part) return;
+            if (part.parts && part.parts.length) { part.parts.forEach(walk); return; }
+            if (part.filename) return;   // adjuntos no
+            const data = part.body && part.body.data;
+            if (!data) return;
+            if (/^text\/plain/i.test(part.mimeType || '')) plain.push(b64urlTexto(data));
+            else if (/^text\/html/i.test(part.mimeType || '')) html.push(htmlATexto(b64urlTexto(data)));
+        })(msg && msg.payload);
+        const t = plain.length ? plain.join('\n') : html.join('\n');
+        return t.split(/\r?\n/).filter(l => !/^\s*>/.test(l)).join('\n')
+            .replace(/https?:\/\/\S+/g, ' ')
+            .normalize('NFC');
+    }
+
+    /** "34 años" · "8 años, 05 meses" · "10 meses" (mismo formato que la edad calculada desde la fecha de nacimiento). */
+    function formatoEdad(anos, meses) {
+        anos = Number(anos) || 0; meses = meses == null || meses === '' ? null : Number(meses);
+        if (anos < 0 || anos > 110 || (meses != null && (meses < 0 || meses > 11))) return '';
+        const mm = meses != null ? String(meses).padStart(2, '0') + (meses === 1 ? ' mes' : ' meses') : '';
+        if (!anos) return mm;
+        const aa = `${anos} ${anos === 1 ? 'año' : 'años'}`;
+        return mm ? `${aa}, ${mm}` : aa;
+    }
+
+    /**
+     * Busca la edad del paciente en el texto del correo. Devuelve "34 años", "8 años, 05 meses" o ''.
+     * 1º "Edad: 34" / "edad 34 años" / "Edad: 8a 5m". 2º "34 años" suelto (descarta "hace 2 años",
+     * "2 años de evolución", etc.); si aparecen edades distintas, no adivina.
+     */
+    function extraerEdad(texto) {
+        const t = String(texto || '').replace(/[ \t ]+/g, ' ');
+        const ANOS = '(?:a(?:ñ|n)os?|a\\.?)';
+        const MESES = '(?:m(?:eses|es)?\\.?)';
+        // 1º con etiqueta "edad"
+        let m = new RegExp(`\\bedad(?:\\s+(?:del?\\s+)?(?:paciente|pcte\\.?))?\\s*[:=\\-–]?\\s*(\\d{1,3})\\s*(${ANOS}|${MESES})?(?:\\s*(?:y|,)?\\s*(\\d{1,2})\\s*${MESES}(?![a-z]))?`, 'i').exec(t);
+        if (m) {
+            const unidad = (m[2] || '').toLowerCase();
+            if (/^m/.test(unidad)) return formatoEdad(0, m[1]);
+            const r = formatoEdad(m[1], m[3]);
+            if (r) return r;
+        }
+        // 2º "34 años" sin etiqueta
+        const NO_ANTES = /(hace|desde|durante|por|hasta|cada|[uú]ltimos?|m[aá]s\s+de|menos\s+de|casi|aprox\.?|garant[ií]a|plazo|antig[uü]edad|tiene\s+hace)\s*$/i;
+        const NO_DESPUES = /^\s*(de\s+(evoluci|antig|tratamiento|uso|duraci|control|garant|experiencia)|atr[aá]s|aprox|m[aá]s)/i;
+        const re = /(\d{1,3})\s*(?:a(?:ñ|n)os|año)\b(?:\s*(?:y|,)?\s*(\d{1,2})\s*mes(?:es)?\b)?/gi;
+        const vistas = new Set();
+        while ((m = re.exec(t))) {
+            const antes = t.slice(Math.max(0, m.index - 25), m.index);
+            const despues = t.slice(m.index + m[0].length, m.index + m[0].length + 25);
+            if (NO_ANTES.test(antes) || NO_DESPUES.test(despues)) continue;
+            const r = formatoEdad(m[1], m[2]);
+            if (r) vistas.add(r);
+        }
+        return vistas.size === 1 ? [...vistas][0] : '';
+    }
+
+    /** Fecha de nacimiento escrita en el correo ("Fecha de nacimiento: 14/03/2010", "F. Nac. 14-03-10", "FN: …") → "14/03/2010" o ''. */
+    function extraerNacimiento(texto, refMs) {
+        const m = /(?:fecha\s+(?:de\s+)?nacimiento|f\.?\s*(?:de\s+)?nac(?:imiento)?\.?|\bfn\.?)\s*[:\-–]?\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/i.exec(String(texto || ''));
+        if (!m) return '';
+        const d = +m[1], mo = +m[2];
+        let y = +m[3];
+        const ref = new Date(refMs || Date.now());
+        if (m[3].length === 2) y += (2000 + y > ref.getFullYear() ? 1900 : 2000);
+        const f = new Date(y, mo - 1, d);
+        if (f.getMonth() !== mo - 1 || f.getDate() !== d || f > ref || y < ref.getFullYear() - 110) return '';
+        return `${String(d).padStart(2, '0')}/${String(mo).padStart(2, '0')}/${y}`;
+    }
+
+    /** "9 de noviembre del 2026" (hora local) */
+    function fechaLarga(ms) {
+        const d = new Date(Number(ms));
+        if (isNaN(d)) return '';
+        return `${d.getDate()} de ${MESES_ES[d.getMonth()]} del ${d.getFullYear()}`;
+    }
+
+    /** Edad / fecha de nacimiento y fecha de envío de un hilo (solo mensajes recibidos). */
+    function datosDelCorreo(incoming, subject) {
+        const conImg = incoming.find(mm => classifyAttachments([mm]).images.length) || incoming[0];
+        const fechaEnvio = Number(conImg && conImg.internalDate) || 0;
+        let edad = '', fechaNac = '';
+        for (const mm of [...incoming].reverse()) {          // el más reciente manda (puede corregir al anterior)
+            const t = (subject || '') + '\n' + textoMensaje(mm);
+            if (!edad) edad = extraerEdad(t);
+            if (!fechaNac) fechaNac = extraerNacimiento(t, fechaEnvio);
+            if (edad) break;
+        }
+        return { edad, fechaNac: edad ? '' : fechaNac, fechaEnvio };
+    }
+
+    /** ¿La orden es de Ovalle? (remitente/asunto, o la plantilla que se usó con ese remitente) */
+    function esOvalle(o, usarPlantillaActual) {
+        if (!o) return false;
+        if (o.ovalle) return true;
+        if (/ovalle/i.test([o.fromName, o.fromEmail, o.subject].join(' '))) return true;
+        if (!usarPlantillaActual) return false;
+        const sel = document.getElementById('template-select');
+        const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+        return !!(opt && /ovalle/i.test(opt.textContent || ''));
+    }
+
     /** Intenta sacar el nombre del paciente desde el asunto. */
     const titleCase = (t) => t.toLowerCase()
         .replace(/(^|[\s'´’-])(\p{L})/gu, (m, a, c) => a + c.toUpperCase())
@@ -176,6 +303,7 @@
                 const answered = emailOf(hdr(last, 'From')) === myEmail;
                 const att = classifyAttachments(msgs);
                 const subject = hdr(lastIn, 'Subject') || '(sin asunto)';
+                const dc = datosDelCorreo(incoming, hdr(incoming[0], 'Subject') || subject);
                 out.push({
                     threadId: t.id,
                     subject,
@@ -185,6 +313,9 @@
                     date: Number(lastIn.internalDate) || Date.now(),
                     snippet: cleanSnippet(lastIn.snippet || ''),
                     patient: guessPatient(subject),
+                    edad: dc.edad,
+                    fechaNac: dc.fechaNac,
+                    fechaEnvio: dc.fechaEnvio,
                     nImages: att.images.length,
                     nUnsupported: att.unsupported.length,
                     attDetail: [
@@ -309,7 +440,10 @@
 
     // ---------- Orden activa ----------
     function setActive(o) {
-        active = o ? { threadId: o.threadId, subject: o.subject, from: o.from, fromEmail: o.fromEmail, fromName: o.fromName, patient: o.patient } : null;
+        active = o ? {
+            threadId: o.threadId, subject: o.subject, from: o.from, fromEmail: o.fromEmail, fromName: o.fromName, patient: o.patient,
+            edad: o.edad || '', fechaNac: o.fechaNac || '', fechaEnvio: o.fechaEnvio || 0, ovalle: !!o.ovalle,
+        } : null;
         if (active) safeSet(ACTIVE_KEY, JSON.stringify(active)); else safeDel(ACTIVE_KEY);
         renderChip();
     }
@@ -338,13 +472,53 @@
         const v = ta.value;
         const partes = [];
         if (e.doctor && !v.includes(e.doctor) && (forzar || !/\b(dr\(a\)|dra?|doctora?)\b/i.test(v))) partes.push(`Dr(a). ${e.doctor}.`);
-        if (e.fecha && !v.includes(e.fecha) && (forzar || !/\bfecha\b/i.test(v))) partes.push(`Fecha: ${e.fecha}.`);
+        // En Ovalle la fecha del informe es la del envío del correo (no la de la etiqueta)
+        const fechaEtq = esOvalle(active) && active.fechaEnvio ? '' : e.fecha;
+        if (fechaEtq && !v.includes(fechaEtq) && (forzar || !/\bfecha\b(?!\s+de\s+nac)/i.test(v))) partes.push(`Fecha: ${fechaEtq}.`);
         if (!partes.length) return false;
         const pref = active && active.patient ? `Paciente: ${active.patient}. ` : '';
         const idx = pref && v.startsWith(pref) ? pref.length : 0;
         ta.value = v.slice(0, idx) + partes.join(' ') + ' ' + v.slice(idx);
         ta.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
+    }
+
+    /**
+     * Ovalle: escribe "Edad: …." (o "Fecha de nacimiento: …." si solo viene esa) y "Fecha: <envío del correo>."
+     * después de "Paciente: …." (o al inicio). forzar=true ignora lo ya dictado. Devuelve lo insertado ('' si nada).
+     */
+    function insertarDatosCorreo(forzar) {
+        const ta = document.getElementById('transcription');
+        if (!active || !ta || !esOvalle(active, forzar)) return '';
+        const v = ta.value;
+        const partes = [];
+        const yaEdad = /\bedad\b|\b\d{1,3}\s*(años|año|meses)\b|nacimiento|\bnacid[oa]\b/i.test(v);
+        if (active.edad) {
+            if (!v.includes(active.edad) && (forzar || !yaEdad)) partes.push(`Edad: ${active.edad}.`);
+        } else if (active.fechaNac && !v.includes(active.fechaNac) && (forzar || !yaEdad)) {
+            partes.push(`Fecha de nacimiento: ${active.fechaNac}.`);   // main.js la convierte en edad
+        }
+        const fecha = active.fechaEnvio ? fechaLarga(active.fechaEnvio) : '';
+        if (fecha && !v.includes(fecha) && (forzar || !/\bfecha\b(?!\s+de\s+nac)/i.test(v))) partes.push(`Fecha: ${fecha}.`);
+        if (!partes.length) return '';
+        const pref = active.patient ? `Paciente: ${active.patient}.` : '';
+        const idx = pref && v.includes(pref) ? v.indexOf(pref) + pref.length : 0;
+        const txt = partes.join(' ');
+        ta.value = v.slice(0, idx) + (idx ? ' ' : '') + txt + (idx ? '' : ' ') + v.slice(idx);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return txt;
+    }
+
+    /** Inserta cuando no se está dictando (para no pisar el texto que va llegando del motor de voz). */
+    function cuandoNoSeDicte(threadId, fn) {
+        let intentos = 0;
+        const dictando = () => { try { return typeof isRecording !== 'undefined' && !!isRecording; } catch (e) { return false; } };
+        const tick = () => {
+            if (!active || active.threadId !== threadId) return;
+            if (dictando()) { if (++intentos < 200) setTimeout(tick, 1500); return; }
+            fn();
+        };
+        tick();
     }
 
     async function leerEtiquetaOrden(threadId, files) {
@@ -399,9 +573,16 @@
             return;
         }
         if (window.GTXLotes && window.GTXLotes.activo) window.GTXLotes.salir();
-        setActive(o);
         const usedTpl = applySenderTemplate(o.fromEmail);
+        setActive({ ...o, ovalle: esOvalle(o, usedTpl) });
         closeModal();
+        if (active.ovalle && (active.edad || active.fechaNac || active.fechaEnvio)) {
+            const tid = active.threadId;
+            cuandoNoSeDicte(tid, () => {
+                const txt = insertarDatosCorreo(false);
+                if (txt) toast('Datos del correo agregados al dictado: ' + txt, 'ok', 5000);
+            });
+        }
         const label = (o.patient || o.subject) + ' — ' + o.fromName;
         if (window.GTXWorkstation) {
             toast('Abriendo orden y bajando imágenes…', 'info', 2500);
@@ -569,6 +750,8 @@
                 }
             } else if (act.dataset.chip === 'board' && active && window.GTXWorkstation) {
                 window.GTXWorkstation.openBoard('order:' + active.threadId, (active.patient || active.subject) + ' — ' + active.fromName, () => bajarImagenes(active.threadId));
+            } else if (act.dataset.chip === 'correo' && active) {
+                if (!insertarDatosCorreo(true)) toast('La edad y la fecha ya están en el dictado.', 'info', 3000);
             } else if (act.dataset.chip === 'etq' && active) {
                 if (!insertarEtiqueta(active.threadId, true)) toast('El Dr(a). y la fecha ya están en el dictado.', 'info', 3000);
             }
@@ -584,10 +767,11 @@
         chipEl.innerHTML = `
             <i data-lucide="mail-open"></i>
             <div class="chip-text">
-                <div class="chip-title">${esc(active.patient || active.subject)}</div>
+                <div class="chip-title">${esc(active.patient || active.subject)}${active.edad ? ' · ' + esc(active.edad) : ''}</div>
                 <div class="chip-sub">${esc(active.fromName)} · ${esc(active.subject)}</div>
             </div>
             ${active.patient ? '<button data-chip="name" title="Escribir el nombre del paciente al inicio del dictado">Insertar nombre</button>' : ''}
+            ${esOvalle(active, true) && (active.edad || active.fechaNac || active.fechaEnvio) ? `<button data-chip="correo" title="Escribir al inicio del dictado ${active.edad || active.fechaNac ? 'la edad y ' : ''}la fecha de envío del correo">Insertar ${active.edad || active.fechaNac ? 'edad y ' : ''}fecha</button>` : ''}
             ${etiquetas[active.threadId] && (etiquetas[active.threadId].doctor || etiquetas[active.threadId].fecha) ? '<button data-chip="etq" title="Escribir al inicio del dictado el Dr(a). y la fecha leídos de la etiqueta de la orden">Insertar Dr(a). y fecha</button>' : ''}
             <button data-chip="board" title="Ver las imágenes de esta orden en el tablero"><i data-lucide="layout-panel-left"></i></button>
             <button data-chip="close" title="Cerrar esta orden (el botón Gmail volverá a buscar por nombre)"><i data-lucide="x"></i></button>`;
@@ -728,6 +912,8 @@
         refresh,
         openOrder,
         _guessPatient: guessPatient,
+        _extraerEdad: extraerEdad,
+        _extraerNacimiento: extraerNacimiento,
         _senders: loadSenders,
         _classify: classifyAttachments,
     };
