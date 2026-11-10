@@ -6,7 +6,7 @@
     <title>GTX Radiologia - STT</title>
     <script src="beta-guard.js?v=3"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=1.3">
+    <link rel="stylesheet" href="style.css?v=1.4">
     <link rel="stylesheet" href="canvas-board.css?v=7">
     <link rel="stylesheet" href="gtx-extras.css?v=4">
     <script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.min.js"></script>
@@ -92,6 +92,17 @@
                     <button id="ai-changes-close" class="ai-changes-close" title="Ocultar"><i data-lucide="x"></i></button>
                 </div>
                 <ul id="ai-changes-list" class="ai-changes-list"></ul>
+            </div>
+
+            <div id="raw-transcript-panel" class="raw-transcript-panel hidden">
+                <div class="raw-transcript-header">
+                    <span class="raw-transcript-icon"><i data-lucide="mic"></i></span>
+                    <span class="raw-transcript-title">Transcripción original (sin procesar)</span>
+                    <button id="raw-transcript-copy" class="raw-transcript-btn" title="Copiar transcripción original"><i data-lucide="copy"></i></button>
+                    <button id="raw-transcript-toggle" class="raw-transcript-btn" title="Contraer / expandir"><i data-lucide="chevron-up"></i></button>
+                    <button id="raw-transcript-close" class="raw-transcript-btn" title="Ocultar"><i data-lucide="x"></i></button>
+                </div>
+                <div id="raw-transcript-text" class="raw-transcript-text"></div>
             </div>
 
 
@@ -492,7 +503,7 @@
     <script src="prompt.js?v=10"></script>
     <script src="gmail-integration.js?v=1.4"></script>
     <script src="negrita.js?v=1"></script>
-    <script src="main.js?v=42"></script>
+    <script src="main.js?v=43"></script>
     <script src="canvas-board.js?v=8"></script>
     <script src="clasificador.js?v=3"></script>
     <script src="workstation.js?v=3"></script>

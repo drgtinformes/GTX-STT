@@ -612,6 +612,8 @@ let isRealtimePaused = false;
 let finalTranscript = '';
 let lastDictatedText = ''; // Track engine text before manual edits
 let lastSystemText = ''; // Rastrear el último texto puesto por el sistema (antes de las correcciones del usuario)
+let _transcripcionCruda = ''; // texto del STT antes de "Procesar con IA" (recuadro de comparación)
+let _ultimoInformeIA = '';     // último informe entregado por la IA
 let learnDebounceTimer = null; // Temporizador para el guardado asíncrono
 
 
@@ -3071,12 +3073,17 @@ async function llamarDeepSeek(model, messages, deepseekKey, { esperaInicioMs = 1
 // === Lógica de Procesamiento con IA (Google Gemini) ===
 aiProcessBtn.addEventListener('click', async () => {
     triggerCorrectionCheck(); // No bloqueante: el aprendizaje corre en 2º plano (ya se dispara en input/blur). El await previo retrasaba CADA procesado.
-    const textToProcess = prepararDictadoParaIA(transcriptionArea.value.trim()); // puntuación dictada ("coma", "punto y coma") -> signos; rangos cortados por el STT
+    const textoCrudo = transcriptionArea.value.trim(); // lo que entregó el STT (o lo que había en el cuadro), antes de cualquier limpieza
+    const textToProcess = prepararDictadoParaIA(textoCrudo); // puntuación dictada ("coma", "punto y coma") -> signos; rangos cortados por el STT
     const formatterModel = localStorage.getItem('formatter_model') || 'auto';
 
     if (!textToProcess) {
         alert('No hay texto para procesar. Por favor dicta algo primero.');
         return;
+    }
+    // Si se vuelve a procesar el mismo informe que entregó la IA (sin cambios), se conserva la transcripción original previa.
+    if (!(_ultimoInformeIA && textoCrudo === _ultimoInformeIA.trim() && _transcripcionCruda)) {
+        _transcripcionCruda = textoCrudo;
     }
     ocultarPanelCambios(); // el recuadro de cambios anterior ya no aplica
 
@@ -3709,10 +3716,42 @@ function extraerCambiosIA(texto) {
 function ocultarPanelCambios() {
     const panel = document.getElementById('ai-changes-panel');
     if (panel) panel.classList.add('hidden');
+    ocultarTranscripcionCruda();
 }
+
+// === Recuadro "Transcripción original (sin procesar)" ===
+// Muestra bajo el informe lo que transcribió el motor STT antes de pasar por la IA,
+// para comparar lo que se escucha con lo que se transcribió y con lo que dejó la IA.
+function ocultarTranscripcionCruda() {
+    const p = document.getElementById('raw-transcript-panel');
+    if (p) p.classList.add('hidden');
+}
+
+function mostrarTranscripcionCruda(informe) {
+    _ultimoInformeIA = informe || '';
+    const p = document.getElementById('raw-transcript-panel');
+    const t = document.getElementById('raw-transcript-text');
+    if (!p || !t || !_transcripcionCruda) return;
+    t.textContent = _transcripcionCruda; // textContent: nunca se interpreta como HTML
+    p.classList.remove('hidden');
+}
+
+document.getElementById('raw-transcript-close')?.addEventListener('click', ocultarTranscripcionCruda);
+document.getElementById('raw-transcript-toggle')?.addEventListener('click', () => {
+    document.getElementById('raw-transcript-panel')?.classList.toggle('collapsed');
+});
+document.getElementById('raw-transcript-copy')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    try {
+        await navigator.clipboard.writeText(_transcripcionCruda || '');
+        btn.style.color = '#4ade80';
+        setTimeout(() => { btn.style.color = ''; }, 1200);
+    } catch (err) { console.warn('No se pudo copiar la transcripción original:', err); }
+});
 
 function mostrarPanelCambios(cambios, dictado, informe) {
     if (window.GTXRevisorIA) window.GTXRevisorIA.prefetch(dictado);
+    mostrarTranscripcionCruda(informe);
     const panel = document.getElementById('ai-changes-panel');
     const lista = document.getElementById('ai-changes-list');
     const titulo = document.getElementById('ai-changes-title');
@@ -3763,7 +3802,7 @@ function mostrarPanelCambios(cambios, dictado, informe) {
     }
 }
 
-document.getElementById('ai-changes-close')?.addEventListener('click', ocultarPanelCambios);
+document.getElementById('ai-changes-close')?.addEventListener('click', () => document.getElementById('ai-changes-panel')?.classList.add('hidden'));
 
 // === Lógica de Generación de Archivo Word (.docx) ===
 
